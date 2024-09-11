@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bluetooth.h"
 #include "driver/gpio.h"
 #include "eink.h"
 #include "esp_chip_info.h"
@@ -233,26 +234,26 @@ void app_main(void) {
   // Print Chip Info
   esp_chip_info_t chip_info;
   esp_chip_info(&chip_info);
-  ESP_LOGW(TAG, "------------------------------------- System Info:");
-  ESP_LOGW(TAG, "    %s chip with %d CPU cores, WiFi%s%s%s%s%s%s, ", CONFIG_IDF_TARGET, chip_info.cores,
+  ESP_LOGI(TAG, "------------------------------------- System Info:");
+  ESP_LOGI(TAG, "    %s chip with %d CPU cores, WiFi%s%s%s%s%s%s, ", CONFIG_IDF_TARGET, chip_info.cores,
            (chip_info.features & CHIP_FEATURE_BT) ? "/BT" : "", (chip_info.features & CHIP_FEATURE_BLE) ? "/BLE" : "",
            (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "/FLASH" : "",
            (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "/WiFi" : "",
            (chip_info.features & CHIP_FEATURE_IEEE802154) ? "/WPAN" : "",
            (chip_info.features & CHIP_FEATURE_EMB_PSRAM) ? "/PSRAM" : "");
-  ESP_LOGW(TAG, "    Heap: %lu", esp_get_free_heap_size());
-  ESP_LOGW(TAG, "    Reset reason: %d", esp_reset_reason());
+  ESP_LOGI(TAG, "    Heap: %lu", esp_get_free_heap_size());
+  ESP_LOGI(TAG, "    Reset reason: %d", esp_reset_reason());
 
   // Print Partition Info
   esp_ota_img_states_t ota_state;
   esp_partition_t* part_info = (esp_partition_t*)esp_ota_get_boot_partition();
   esp_ota_get_state_partition(part_info, &ota_state);
   if (NULL != part_info) {
-    ESP_LOGW(TAG, "------------------------------------- Current partition:");
-    ESP_LOGW(TAG, "    Label = %s, state = %d", part_info->label, ota_state);
-    ESP_LOGW(TAG, "    Address=0x%lx, size=0x%lx", part_info->address, part_info->size);
+    ESP_LOGI(TAG, "------------------------------------- Current partition:");
+    ESP_LOGI(TAG, "    Label = %s, state = %d", part_info->label, ota_state);
+    ESP_LOGI(TAG, "    Address=0x%lx, size=0x%lx", part_info->address, part_info->size);
   }
-  ESP_LOGW(TAG, "-------------------------------------");
+  ESP_LOGI(TAG, "-------------------------------------");
 
   // Initialize NVS, format it if necessary
   ret = nvs_flash_init();
@@ -267,22 +268,22 @@ void app_main(void) {
   // Print out NVS statistics
   nvs_stats_t nvs_stats;
   nvs_get_stats("nvs", &nvs_stats);
-  ESP_LOGW(TAG, "-------------------------------------");
-  ESP_LOGW(TAG, "NVS Statistics:");
-  ESP_LOGW(TAG, "NVS Used = %d", nvs_stats.used_entries);
-  ESP_LOGW(TAG, "NVS Free = %d", nvs_stats.free_entries);
-  ESP_LOGW(TAG, "NVS All = %d", nvs_stats.total_entries);
+  ESP_LOGI(TAG, "-------------------------------------");
+  ESP_LOGI(TAG, "NVS Statistics:");
+  ESP_LOGI(TAG, "NVS Used = %d", nvs_stats.used_entries);
+  ESP_LOGI(TAG, "NVS Free = %d", nvs_stats.free_entries);
+  ESP_LOGI(TAG, "NVS All = %d", nvs_stats.total_entries);
 
   nvs_iterator_t iter = NULL;
   esp_err_t res       = nvs_entry_find("nvs", NULL, NVS_TYPE_ANY, &iter);
   while (res == ESP_OK) {
     nvs_entry_info_t info;
     nvs_entry_info(iter, &info);
-    ESP_LOGW(TAG, "Key '%s', Type '%d'", info.key, info.type);
+    ESP_LOGI(TAG, "Key '%s', Type '%d'", info.key, info.type);
     res = nvs_entry_next(&iter);
   }
   nvs_release_iterator(iter);
-  ESP_LOGW(TAG, "-------------------------------------");
+  ESP_LOGI(TAG, "-------------------------------------");
 #endif
 
 #if 0 // Set NVS values here
@@ -295,16 +296,18 @@ void app_main(void) {
   }
 #endif
 
+  // Start OS Statistics Task
+  xTaskCreate(TaskOSStats, "FreeRTOS Stats", 4096, NULL, tskIDLE_PRIORITY, NULL);
+
   // The LED Output
   gpio_reset_pin(PIN_LED);
   gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
 
-  // Start OS Statistics Task
-  xTaskCreate(TaskOSStats, "FreeRTOS Stats", 4096, NULL, tskIDLE_PRIORITY, NULL);
-
   // Init EINK SPI driver
   eink_init();
-  // eink_fillscreen(0xFF); // Clear Screen
+
+  // Bluetooth
+  blue_init();
 
   // Init LVGL
   lv_init();
