@@ -19,18 +19,129 @@ extern "C" {
 
 #include "stdint.h"
 
-// Struct of the manufacturer data
-typedef struct {
-  uint8_t manu_record_type;   // Should always be 0x10
-  uint8_t manu_record_length; //
-  uint16_t product_id;        // The 2-Byte product ID
-  uint8_t record_type;        // Record type
-  uint16_t data_counter;      // Data counter / Nonce
-  uint8_t key_b0;             // Byte 0 of encryption key
-} victron_t;
-
 #define MANUFACTURER_RTYPE 0x10
+#define MANUFACTURER_RLEN 2
 #define MANUFACTURER_ID 0x02E1
+
+// Bluetooth LE Frame
+typedef struct __attribute__((packed)) {
+  uint16_t manu_id;           // Manufacturer ID
+  uint8_t manu_record_type;   // Should always be 0x10
+  uint8_t manu_record_length; // Should be 0x02
+  uint16_t product_id;        // 2-Byte product ID
+  uint8_t record_type;        // Record type
+  uint8_t data_counter_lsb;   // Data counter / Nonce
+  uint8_t data_counter_msb;   // Data counter / Nonce
+  uint8_t encryption_key_0;   // Byte 0 of encryption key
+  uint8_t encData;            // Start of encrypted data
+} VICTRON_BLE_RECORD;
+
+// Encrypted Data: Solar Charger Record (0x01)
+typedef struct {
+  uint8_t dev_state;
+  uint8_t charger_error;
+  int16_t bat_voltage; // Voltage in 0.01V
+  int16_t bat_current; // Current in 0.1A
+  uint16_t yield;      // todays yield in 0.01kWh
+  uint16_t pv_power;   // Power in W
+  uint16_t load;       // Load in 0.1A (only 9 bits)
+  uint8_t res[4];      // Unused
+} victron_solar_charger_t;
+
+// Encrypted Data: Battery Monitor Record (0x02)
+typedef struct {
+  uint16_t ttg;             // TTG in 1min
+  int16_t bat_voltage;      // Voltage in 0.01V
+  uint16_t alarm;           // Alarm reason
+  uint16_t volt_temp;       // Aux+Mid voltages, temperature
+  uint8_t aux_in : 2;       // 2 bits aux in
+  int32_t bat_current : 22; // Current in 0.1A
+  int32_t consumed_ah : 20; // Consumed in 0.1Ah
+  uint16_t soc : 10;        // SOC in 0.1%
+  uint16_t reserved : 10;   // Unused
+} victron_battery_monitor_t;
+
+// Encrypted Data: Device States
+#define VREG_STATE_OFF 0x00,
+#define VREG_STATE_LOW_POWER 0x01
+#define VREG_STATE_FAULT 0x02
+#define VREG_STATE_BULK 0x03
+#define VREG_STATE_ABSORPTION 0x04
+#define VREG_STATE_FLOAT 0x05
+#define VREG_STATE_STORAGE 0x06
+#define VREG_STATE_EQUALIZE 0x07
+#define VREG_STATE_PASSTHRU 0x08
+#define VREG_STATE_INVERTING 0x09
+#define VREG_STATE_ASSISTING 0x0A
+#define VREG_STATE_POWER_SUPPLY 0x0B
+#define VREG_STATE_SUSTAIN 0xF4
+#define VREG_STATE_STARTING_UP 0xF5
+#define VREG_STATE_REPEATED_ABSORPTION 0xF6
+#define VREG_STATE_AUTO_EQUALIZE 0xF7
+#define VREG_STATE_BATTERY_SAFE 0xF8
+#define VREG_STATE_TEST 0xFB
+#define VREG_STATE_HUB1 0xFC
+#define VREG_STATE_NOT_AVAILABLE 0xFF
+
+// Encrypted Data: Error Codes
+#define VREG_ERR_NO_ERROR 0
+#define VREG_ERR_BAT_TEMPERATURE_HIGH 1
+#define VREG_ERR_BAT_VOLTAGE_HIGH 2
+#define VREG_ERR_BAT_TEMP_SENS_MISW_P 3
+#define VREG_ERR_BAT_TEMP_SENS_MISW_N 4
+#define VREG_ERR_BAT_TEMP_SENS_DISC 5
+#define VREG_ERR_BAT_VOLT_SENS_MISW_P 6
+#define VREG_ERR_BAT_VOLT_SENS_MISW_N 7
+#define VREG_ERR_BAT_VOLT_SENS_DISC 8
+#define VREG_ERR_BAT_VOLT_WLOSS 9
+#define VREG_ERR_CHARGER_TEMP_HIGH 17
+#define VREG_ERR_CHARGER_OVER_CURRENT 18
+#define VREG_ERR_CHARGER_CURR_REVERSE 19
+#define VREG_ERR_CHARGER_BULK_TIME 20
+#define VREG_ERR_CHARGER_CURRENT_SENSOR 21
+#define VREG_ERR_CHARGER_TEMP_SENS_MISW 22
+#define VREG_ERR_CHARGER_TEMP_SENS_DISC 23
+#define VREG_ERR_CHARGER_FAN 24
+#define VREG_ERR_CHARGER_FAN_OVR_CURR 25
+#define VREG_ERR_CHARGER_TERM_OVERHEATED26
+#define VREG_ERR_CHARGER_SHORT_CIRCUIT 27
+#define VREG_ERR_INPUT_VOLTAGE 33
+#define VREG_ERR_INPUT_CURRENT 34
+#define VREG_ERR_INPUT_POWER 35
+#define VREG_ERR_INPUT_REV_POLARITY 36
+#define VREG_ERR_INPUT_VOL_ABSENT 37
+#define VREG_ERR_LOAD_TEMP_HIGH 49
+#define VREG_ERR_LOAD_OVER_VOLTAGE 50
+#define VREG_ERR_LOAD_OVER_CURRENT 51
+#define VREG_ERR_LOAD_CURR_REVERSE 52
+#define VREG_ERR_LOAD_OVER_POWER 53
+#define VREG_ERR_LINK_DEV_MISSING 65
+#define VREG_ERR_LINK_DEV_INCOMPAT 66
+#define VREG_ERR_LINK_BMS_CON_LOST 67
+#define VREG_ERR_NVS_W_ERROR 113
+#define VREG_ERR_CPU_TEMPERATURE 114
+#define VREG_ERR_SETTINGS_LOST 116
+#define VREG_ERR_INCOMP_FW 117
+#define VREG_ERR_INCOMP_HW 118
+#define VREG_ERR_FACTORY_SETTINGS 119
+#define VREG_ERR_NOT_AVAILABLE 0xFF
+
+// The Record Types
+#define VREG_RTYPE_TEST_RECORD 0x00
+#define VREG_RTYPE_SOLAR_CHARGER 0x01
+#define VREG_RTYPE_BATTERY_MONITOR 0x02
+#define VREG_RTYPE_INVERTER 0x03
+#define VREG_RTYPE_DCDC_CONVERTER 0x04
+#define VREG_RTYPE_SMART_LITHIUM 0x05
+#define VREG_RTYPE_INVERTER_RS 0x06
+#define VREG_RTYPE_GX_DEVICE 0x07
+#define VREG_RTYPE_AC_CHARGER 0x08
+#define VREG_RTYPE_SMART_BATTERY_PROTECT 0x09
+#define VREG_RTYPE_LYNX_SMART_BMS 0x0A
+#define VREG_RTYPE_MULTI_RS 0x0B
+#define VREG_RTYPE_VE_BUS 0x0C
+#define VREG_RTYPE_DC_ENERGY_METER 0x0D
+#define VREG_RTYPE_ORION_XS 0x0F
 
 // The Product IDs
 #define PID_BLUESOLAR_MPPT_100_15 0XA043
@@ -146,23 +257,6 @@ typedef struct {
 #define PID_SMARTSOLAR_MPPT_VE_CAN_250_70_REV2 0XA114
 #define PID_SMARTSOLAR_MPPT_VE_CAN_250_85 0XA10A
 #define PID_SMARTSOLAR_MPPT_VE_CAN_250_85_REV2 0XA116
-
-// The Record Types
-#define RTYPE_TEST_RECORD 0x00
-#define RTYPE_SOLAR_CHARGER 0x01
-#define RTYPE_BATTERY_MONITOR 0x02
-#define RTYPE_INVERTER 0x03
-#define RTYPE_DCDC_CONVERTER 0x04
-#define RTYPE_SMART_LITHIUM 0x05
-#define RTYPE_INVERTER_RS 0x06
-#define RTYPE_GX_DEVICE 0x07
-#define RTYPE_AC_CHARGER 0x08
-#define RTYPE_SMART_BATTERY_PROTECT 0x09
-#define RTYPE_LYNX_SMART_BMS 0x0A
-#define RTYPE_MULTI_RS 0x0B
-#define RTYPE_VE_BUS 0x0C
-#define RTYPE_DC_ENERGY_METER 0x0D
-#define RTYPE_ORION_XS 0x0F
 
 #ifdef __cplusplus
 }

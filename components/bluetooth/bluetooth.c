@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "../../main/sysconfig.h"
+#include "aes/esp_aes.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
@@ -32,9 +33,12 @@
 
 /* Private define ------------------------------------------------------------*/
 
-#define SCAN_TIME 30 // [s] Scanning time
+#define SCAN_TIME 60    // [s] Scanning time
+#define MAX_NAME_LEN 30 // Max length of name
 
 /* Private macro -------------------------------------------------------------*/
+
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 /* Private variables ---------------------------------------------------------*/
 static const char* TAG = "BLUE";
@@ -51,8 +55,98 @@ static esp_ble_scan_params_t ble_scan_params = {
 /* Private function prototypes -----------------------------------------------*/
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param);
+bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame);
+void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen, const char* pName,
+                       const esp_bd_addr_t BLEAddr);
 
 /* Private user code ---------------------------------------------------------*/
+
+// Test if a frame is a valid victron device data frame
+bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
+  if (pFrame->manu_id != MANUFACTURER_ID) {
+    ESP_LOGI(TAG, "Manufacturer 0x%04x is invalid", pFrame->manu_id);
+    return false;
+  }
+  if (pFrame->manu_record_type != MANUFACTURER_RTYPE) {
+    ESP_LOGI(TAG, "Record Type 0x%02x is invalid", pFrame->manu_record_type);
+    return false;
+  }
+  if (pFrame->manu_record_length != MANUFACTURER_RLEN) {
+    ESP_LOGI(TAG, "Record Length 0x%02x is invalid", pFrame->manu_record_length);
+    return false;
+  }
+  ESP_LOGI(TAG, "Frame is a Victron frame!");
+  return true;
+}
+
+// Parses the data in a Victron Frame
+void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen, const char* pName,
+                       const esp_bd_addr_t BLEAddr) {
+  char address[18]   = {0};
+  uint8_t encKey[16] = {0};
+
+  const int16_t encLen    = (1 + frameLen - sizeof(VICTRON_BLE_RECORD));
+  const uint8_t* pEncData = &pFrame->encData;
+
+  snprintf(&address[0], 18, "%02x-%02x-%02x-%02x-%02x-%02x", BLEAddr[0], BLEAddr[1], BLEAddr[2], BLEAddr[3], BLEAddr[4],
+           BLEAddr[5]);
+
+  // Debug-Print content
+  ESP_LOGI(TAG, "          Name = '%s'", pName);
+  ESP_LOGI(TAG, "          Addr = '%s'", address);
+  ESP_LOGI(TAG, "    Product ID = 0x%04x", pFrame->product_id);
+  ESP_LOGI(TAG, "   Record Type = 0x%02x", pFrame->record_type);
+  ESP_LOGI(TAG, "      Data Cnt = 0x%02x:%02x", pFrame->data_counter_msb, pFrame->data_counter_lsb);
+  ESP_LOGI(TAG, "   Encr Key B0 = 0x%02x", pFrame->encryption_key_0);
+
+  if (encLen <= 0) {
+    ESP_LOGW(TAG, "Length of encrypted data %d invalid!", encLen);
+    return;
+  }
+
+  ESP_LOGI(TAG, "Encrypted Data:");
+  ESP_LOG_BUFFER_HEXDUMP(TAG, pEncData, encLen, ESP_LOG_INFO);
+
+  // Find encryption key in NVS
+  // TODO: Implement me!
+
+  // Decrypt data
+  // TODO: Move to func
+  {
+    esp_aes_context ctx;
+    esp_aes_init(&ctx);
+    int status = esp_aes_setkey(&ctx, encKey, sizeof(encKey) * 8);
+    if (status != 0) {
+      ESP_LOGE(TAG, "Error %i when setting key!", status);
+      esp_aes_free(&ctx);
+      return;
+    }
+
+    size_t nc_offset          = 0;
+    uint8_t nonce_counter[16] = {0};
+    uint8_t stream_block[16]  = {0};
+    uint8_t decData[16]       = {0};
+
+    nonce_counter[0] = pFrame->data_counter_lsb;
+    nonce_counter[1] = pFrame->data_counter_msb;
+
+    status = esp_aes_crypt_ctr(&ctx, encLen, &nc_offset, nonce_counter, stream_block, pEncData, &decData[0]);
+    if (status != 0) {
+      ESP_LOGE(TAG, "Error %i at esp_aes_crypt_ctr", status);
+      esp_aes_free(&ctx);
+      return;
+    }
+
+    esp_aes_free(&ctx);
+
+    ESP_LOGI(TAG, "Decrypted Data:");
+    ESP_LOG_BUFFER_HEXDUMP(TAG, &decData[0], encLen, ESP_LOG_INFO);
+  }
+
+  // TODO: Update Data Model
+
+  return;
+}
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
   switch (event) {
@@ -60,42 +154,42 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
       //   ESP_LOGI(TAG, "Scan result received");
       esp_ble_gap_cb_param_t* scan_result = (esp_ble_gap_cb_param_t*)param;
       switch (scan_result->scan_rst.search_evt) {
-        case ESP_GAP_SEARCH_INQ_RES_EVT:
-          char address[18];
-          snprintf(&address[0], 18, "%02x-%02x-%02x-%02x-%02x-%02x", scan_result->scan_rst.bda[0],
-                   scan_result->scan_rst.bda[1], scan_result->scan_rst.bda[2], scan_result->scan_rst.bda[3],
-                   scan_result->scan_rst.bda[4], scan_result->scan_rst.bda[5]);
+        case ESP_GAP_SEARCH_INQ_RES_EVT: {
+          uint8_t* adv_name     = NULL;
+          uint8_t* manu_data    = NULL;
+          uint8_t adv_name_len  = 0;
+          uint8_t manu_data_len = 0;
 
-          ESP_LOGW(TAG, "Advertisement received from '%s':", address);
-          ESP_LOG_BUFFER_HEXDUMP(TAG, scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len, ESP_LOG_INFO);
+          adv_name  = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv, ESP_BLE_AD_TYPE_NAME_CMPL, &adv_name_len);
+          manu_data = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv, ESP_BLE_AD_MANUFACTURER_SPECIFIC_TYPE,
+                                               &manu_data_len);
 
-          // TODO: Test minimal length
-
-          // TODO: Test manufacturer ID
-
-          // TODO: Call parser with manufacturer data
-
-          // uint8_t* adv_name    = NULL;
-          // uint8_t adv_name_len = 0;
-
-          // adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv, ESP_BLE_AD_TYPE_NAME_CMPL,
-          // &adv_name_len);
-
-          // if (adv_name_len > 0) {
-          //   ESP_LOGI(TAG, "Found device:");
-          //   ESP_LOGI(TAG, "   Type = %d", scan_result->scan_rst.dev_type);
-
-          //   if (adv_name != NULL) {
-          //     ESP_LOGI(TAG, "   Name = '%s'", adv_name);
-          //   }
-          //   ESP_LOGI(TAG, "   Addr:");
-          //   ESP_LOG_BUFFER_HEXDUMP(TAG, scan_result->scan_rst.bda, 6, ESP_LOG_INFO);
-
-          //   ESP_LOGI(TAG, "   ADV Data:");
-          //   ESP_LOG_BUFFER_HEXDUMP(TAG, scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len,
-          //                          ESP_LOG_INFO);
-          // }
+          if ((adv_name_len == 0) || (adv_name == NULL)) {
+            ESP_LOGD(TAG, "Advertisement not relevant (No name)");
+          } else if ((manu_data_len == 0) || (manu_data == NULL)) {
+            ESP_LOGD(TAG, "Advertisement not relevant (No manufacturer data)");
+          } else {
+            if (manu_data_len >= sizeof(VICTRON_BLE_RECORD)) {
+              // Test if valid frame and parse
+              if (isVictronFrame((VICTRON_BLE_RECORD*)manu_data)) {
+#if 0
+                ESP_LOGW(TAG, "Advertisement received:");
+                ESP_LOG_BUFFER_HEXDUMP(TAG, scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len,
+                                       ESP_LOG_INFO);
+                ESP_LOGW(TAG, "Manufacturer Data:");
+                ESP_LOG_BUFFER_HEXDUMP(TAG, manu_data, manu_data_len, ESP_LOG_INFO);
+#endif
+                char devName[MAX_NAME_LEN];
+                memset(&devName[0], 0x00, MAX_NAME_LEN);
+                memcpy(&devName[0], adv_name, MIN(adv_name_len, MAX_NAME_LEN));
+                parseVictronFrame((VICTRON_BLE_RECORD*)manu_data, manu_data_len, devName, scan_result->scan_rst.bda);
+              }
+            } else {
+              ESP_LOGI(TAG, "Manufacturer data too small! %d < %d", manu_data_len, sizeof(VICTRON_BLE_RECORD));
+            }
+          }
           break;
+        }
         case ESP_GAP_SEARCH_INQ_CMPL_EVT:
           ESP_LOGI(TAG, "Scanning loop ended, restarting!");
           esp_ble_gap_start_scanning(SCAN_TIME);
@@ -104,7 +198,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
           ESP_LOGW(TAG, "Unknown search event 0x%x", scan_result->scan_rst.search_evt);
 
           break;
-      }
+      } // switch scan_result->scan_rst.search_evt
       break;
     }
 
@@ -117,7 +211,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
     default:
       ESP_LOGW(TAG, "Unsupported GAP event %d!", (uint16_t)event);
       break;
-  }
+  } // switch event
 }
 
 /* Public user code ----------------------------------------------------------*/

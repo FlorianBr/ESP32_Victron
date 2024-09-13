@@ -207,17 +207,6 @@ static void TaskOSStats(void* pvParameters) {
 
 // Send LVGL data to the display
 void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
-  ESP_LOGI(TAG, "Flushing");
-
-#if 1
-  ESP_LOGI(TAG, "Lines:");
-  uint8_t* pData = px_map + 8;
-  for (uint8_t i = 0; i < 10; i++) {
-    ESP_LOG_BUFFER_HEXDUMP(TAG, pData, EINK_SIZE_X / 8, ESP_LOG_INFO);
-    pData += EINK_SIZE_X / 8;
-  }
-#endif
-
   eink_setbuffer(px_map + 8, EINK_BUFFER_SIZE - 8);
   eink_update();
 

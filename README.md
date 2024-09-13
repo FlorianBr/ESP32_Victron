@@ -44,3 +44,10 @@ Libraries used:
 ## Notes
 
 - LV_COLOR_FORMAT_ARGB8888 must be enabled for rotations
+
+## Useful links
+
+- Fabian Schmidts [ESPHome Component](https://github.com/Fabian-Schmidt/esphome-victron_ble)
+- Victrons [Blogpost](https://communityarchive.victronenergy.com/questions/187303/victron-bluetooth-advertising-protocol.html) about the BLE Protocol
+- Victron Spec [Extra Manufacturer Data](https://communityarchive.victronenergy.com/storage/attachments/48745-extra-manufacturer-data-2022-12-14.pdf)
+- Victron Spec [VRegs](https://www.victronenergy.com/upload/documents/VE.Can-registers-public.pdf)
