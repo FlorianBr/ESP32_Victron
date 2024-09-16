@@ -2,7 +2,10 @@
 
 ## What is it?
 
-For the victron devices I have in my camper van I want some low-power display to see the stats like battery capacity and solar panel power.
+For the [Victron](https://www.victronenergy.de/) devices I have in my camper van I want some low-power display to see the stats like battery capacity and solar panel power. Currently supported:
+
+- 500A Smart Shunt
+- Smart Solar MPPT 75/15
 
 ### The Hardware
 
@@ -22,8 +25,9 @@ Libraries used:
 - [x] Basic operating system
 - [x] EINK Driver
 - [x] Basic LVGL setup
-- [ ] Bluetooth: Device detection
-- [ ] Victron: Driver
+- [x] Bluetooth: Device detection
+- [x] Victron: Driver
+- [ ] Victron: Decryption
 - [ ] Victron: Receive smart shunt data
 - [ ] Victron: Receive solar charger data
 - [ ] Victron: Receive charger data
@@ -37,9 +41,11 @@ Libraries used:
 
 ### Maybe
 
-- WiFi
-- Sending Data to a MQTT broker
-- Sending Data via LoRa to my LoRa-Central
+- [ ] WiFi
+- [ ] Sending Data to a MQTT broker
+- [ ] Sending Data via LoRa to my LoRa-Central
+- [ ] Store keys in NVS
+- [ ] Add and Remove keys with MQTT commands
 
 ## Notes
 
