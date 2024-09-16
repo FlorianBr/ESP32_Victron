@@ -29,19 +29,26 @@
 #include "nvs_flash.h"
 #include "victron.h"
 
-/* Private typedef -----------------------------------------------------------*/
-
 /* Private define ------------------------------------------------------------*/
 
 #define SCAN_TIME 60    // [s] Scanning time
 #define MAX_NAME_LEN 30 // Max length of name
+#define KEY_SIZE 16     // size of key in byte
+
+/* Private typedef -----------------------------------------------------------*/
+
+typedef struct {
+  esp_bd_addr_t Addr;    // The Bluetooth address
+  uint8_t Key[KEY_SIZE]; // The encryption key
+} ENC_KEY_ENTRY;
 
 /* Private macro -------------------------------------------------------------*/
 
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 /* Private variables ---------------------------------------------------------*/
-static const char* TAG = "BLUE";
+
+static const char* TAG = "BTLE";
 
 static esp_ble_scan_params_t ble_scan_params = {
     .scan_type          = BLE_SCAN_TYPE_ACTIVE,
@@ -52,8 +59,19 @@ static esp_ble_scan_params_t ble_scan_params = {
     .scan_duplicate     = BLE_SCAN_DUPLICATE_ENABLE, // TODO: Test necessary!
 };
 
+static ENC_KEY_ENTRY enc_keys[] = {
+    {{0xdc, 0x4d, 0x47, 0x2a, 0x9b, 0x3e},
+     {0x05, 0x10, 0xa3, 0x56, 0xf0, 0x70, 0xb3, 0x86, 0x88, 0xdc, 0x9e, 0x2a, 0x94, 0x34, 0x55, 0x11}},
+
+    {{0xde, 0x4b, 0xad, 0x98, 0xa0, 0xf2},
+     {0x5c, 0x2d, 0x00, 0x0d, 0x3c, 0x1b, 0x8f, 0xe7, 0xf3, 0xcc, 0x0a, 0x86, 0x7a, 0x82, 0x0a, 0x60}},
+};
+
 /* Private function prototypes -----------------------------------------------*/
 
+uint8_t* getEncKey(const esp_bd_addr_t Addr);
+bool decrytData(const uint8_t* pEncData, uint8_t* pDecData, size_t length, const uint8_t cnt1, const uint8_t cnt2,
+                const uint8_t* pKey);
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param);
 bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame);
 void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen, const char* pName,
@@ -61,7 +79,12 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
 
 /* Private user code ---------------------------------------------------------*/
 
-// Test if a frame is a valid victron device data frame
+/**
+ * @brief Test if a frame is a valid victron device data frame
+ *
+ * @param pFrame Pointer to the frame data
+ * @return true if a valid Victron Frame
+ */
 bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
   if (pFrame->manu_id != MANUFACTURER_ID) {
     ESP_LOGI(TAG, "Manufacturer 0x%04x is invalid", pFrame->manu_id);
@@ -79,14 +102,75 @@ bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
   return true;
 }
 
-// Parses the data in a Victron Frame
+/**
+ * @brief Get a encrytion key
+ *
+ * @param Addr BLE Address of the device
+ * @return uint8_t* Pointer to the 16-Byte key or NULL
+ */
+uint8_t* getEncKey(const esp_bd_addr_t Addr) {
+  for (size_t i = 0; i < (sizeof(enc_keys) / sizeof(ENC_KEY_ENTRY)); i++) {
+    if (memcmp(&Addr[0], &enc_keys[i].Addr[0], sizeof(esp_bd_addr_t)) == 0) {
+      ESP_LOGI(TAG, "Found key at index %d!", i);
+      return &enc_keys[i].Key[0];
+    }
+  }
+  ESP_LOGW(TAG, "Encryption key not found!");
+  return NULL;
+}
+
+/**
+ * @brief Decrypt the data with a specific key
+ *
+ * @param pEncData Pointer to the ENcrypted data
+ * @param pDecData Pointer to the buffer to store the DEcrypted data
+ * @param length Length of the data
+ * @param cnt1 Nounce / Counter
+ * @param cnt2 Nounce / Counter
+ * @param pKey Pointer to the encryption key
+ * @return true if decoded, false on error
+ */
+bool decrytData(const uint8_t* pEncData, uint8_t* pDecData, size_t length, const uint8_t cnt1, const uint8_t cnt2,
+                const uint8_t* pKey) {
+  esp_aes_context ctx;
+  size_t nc_offset          = 0;
+  uint8_t nonce_counter[16] = {0};
+  uint8_t stream_block[16]  = {0};
+
+  esp_aes_init(&ctx);
+  int status = esp_aes_setkey(&ctx, pKey, KEY_SIZE * 8);
+  if (status != 0) {
+    ESP_LOGE(TAG, "Error %i when setting key!", status);
+    esp_aes_free(&ctx);
+    return false;
+  }
+
+  nonce_counter[0] = cnt2;
+  nonce_counter[1] = cnt1;
+
+  status = esp_aes_crypt_ctr(&ctx, length, &nc_offset, nonce_counter, stream_block, pEncData, pDecData);
+  if (status != 0) {
+    ESP_LOGE(TAG, "Error %i at esp_aes_crypt_ctr", status);
+    esp_aes_free(&ctx);
+    return false;
+  }
+  esp_aes_free(&ctx);
+
+  return true;
+}
+
+/**
+ * @brief Parses the data in a Victron Frame
+ *
+ * @param pFrame Pointer to the frame data
+ * @param frameLen Length of Frame Data
+ * @param pName Device Name
+ * @param BLEAddr BluetoothLE Address
+ */
 void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen, const char* pName,
                        const esp_bd_addr_t BLEAddr) {
-  char address[18]   = {0};
-  uint8_t encKey[16] = {0};
-
-  const int16_t encLen    = (1 + frameLen - sizeof(VICTRON_BLE_RECORD));
-  const uint8_t* pEncData = &pFrame->encData;
+  char address[18]     = {0};
+  const int16_t encLen = (1 + frameLen - sizeof(VICTRON_BLE_RECORD));
 
   snprintf(&address[0], 18, "%02x-%02x-%02x-%02x-%02x-%02x", BLEAddr[0], BLEAddr[1], BLEAddr[2], BLEAddr[3], BLEAddr[4],
            BLEAddr[5]);
@@ -105,45 +189,47 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
   }
 
   ESP_LOGI(TAG, "Encrypted Data:");
-  ESP_LOG_BUFFER_HEXDUMP(TAG, pEncData, encLen, ESP_LOG_INFO);
+  ESP_LOG_BUFFER_HEXDUMP(TAG, &pFrame->encData, encLen, ESP_LOG_INFO);
 
-  // Find encryption key in NVS
-  // TODO: Implement me!
+  // Find encryption key and decrypt data
+  uint8_t* pKey = getEncKey(BLEAddr);
+  if (NULL != pKey) {
+    uint8_t* pDecData = malloc(encLen);
+    if (decrytData(&pFrame->encData, pDecData, encLen, pFrame->data_counter_msb, pFrame->data_counter_lsb, pKey)) {
+      ESP_LOGI(TAG, "Decrypted Data:");
+      ESP_LOG_BUFFER_HEXDUMP(TAG, pDecData, encLen, ESP_LOG_INFO);
 
-  // Decrypt data
-  // TODO: Move to func
-  {
-    esp_aes_context ctx;
-    esp_aes_init(&ctx);
-    int status = esp_aes_setkey(&ctx, encKey, sizeof(encKey) * 8);
-    if (status != 0) {
-      ESP_LOGE(TAG, "Error %i when setting key!", status);
-      esp_aes_free(&ctx);
-      return;
+      // TODO: Update Data Model
+      switch (pFrame->record_type) {
+        case VREG_RTYPE_SOLAR_CHARGER: {
+          if (encLen == sizeof(victron_solar_charger_t)) {
+            ESP_LOGI(TAG, "Decrypted Data for Solar Charger:");
+            victron_solar_charger_t* pData = (victron_solar_charger_t*)pDecData;
+            ESP_LOGI(TAG, "    State = 0x%02x", pData->dev_state);
+            ESP_LOGI(TAG, "    Error = 0x%02x", pData->charger_error);
+            ESP_LOGI(TAG, "  Voltage = %d", pData->bat_voltage);
+            ESP_LOGI(TAG, "  Current = %d", pData->bat_current);
+            ESP_LOGI(TAG, "    Yield = %d", pData->yield);
+            ESP_LOGI(TAG, "    Power = %d", pData->pv_power);
+            ESP_LOGI(TAG, "     Load = %d", pData->load);
+          } else {
+            ESP_LOGW(TAG, "Record size mismatch for Solar Charger! %d != %d", encLen, sizeof(victron_solar_charger_t));
+          }
+          break;
+        }
+        case VREG_RTYPE_BATTERY_MONITOR: {
+          ESP_LOGI(TAG, "Decrypted Data for Battery Monitor:");
+
+          break;
+        }
+        default:
+          ESP_LOGW(TAG, "Record type 0x%02x not supported!", pFrame->record_type);
+
+          break;
+      }
     }
-
-    size_t nc_offset          = 0;
-    uint8_t nonce_counter[16] = {0};
-    uint8_t stream_block[16]  = {0};
-    uint8_t decData[16]       = {0};
-
-    nonce_counter[0] = pFrame->data_counter_lsb;
-    nonce_counter[1] = pFrame->data_counter_msb;
-
-    status = esp_aes_crypt_ctr(&ctx, encLen, &nc_offset, nonce_counter, stream_block, pEncData, &decData[0]);
-    if (status != 0) {
-      ESP_LOGE(TAG, "Error %i at esp_aes_crypt_ctr", status);
-      esp_aes_free(&ctx);
-      return;
-    }
-
-    esp_aes_free(&ctx);
-
-    ESP_LOGI(TAG, "Decrypted Data:");
-    ESP_LOG_BUFFER_HEXDUMP(TAG, &decData[0], encLen, ESP_LOG_INFO);
+    free(pDecData);
   }
-
-  // TODO: Update Data Model
 
   return;
 }
