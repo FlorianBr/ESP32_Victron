@@ -26,9 +26,18 @@
 
 /* Private typedef -----------------------------------------------------------*/
 
+typedef struct {
+  uint16_t voltage; // [0.1V] Voltage
+  int32_t current;  // [0.1A] Charge/discharge current
+  uint16_t soc;     // [0.1%] Battery capacity
+  uint16_t temp;    // [0.1dC] Temperature
+  uint16_t remain;  // [min] Remaining time
+  TickType_t time;  // [Tick] Last update
+} data_shunt_t;
+
 /* Private define ------------------------------------------------------------*/
 
-#define LOOP_TIME 60000           // [ms] Main loop time
+#define LOOP_TIME 5000            // [ms] Main loop time
 #define OSSTATS_ARRAY_SIZE_OFFS 5 // OS-Statistics: Increase this if print_real_time_stats returns ESP_ERR_INVALID_SIZE
 #define OSSTATS_TIME 30000        // [ms] OS-Statistics cycle time
 
@@ -40,10 +49,14 @@
 
 static const char* TAG = "MAIN";
 static uint8_t einkBuffer[EINK_BUFFER_SIZE];
+static data_shunt_t data_shunt;
 
 /* Private function prototypes -----------------------------------------------*/
 
 static void TaskOSStats(void* pvParameters);
+void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain);
+void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr);
+void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map);
 
 /* Private user code ---------------------------------------------------------*/
 
@@ -214,6 +227,21 @@ void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
   lv_display_flush_ready(display);
 }
 
+// Callback to set smartshunts measurement data
+void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain) {
+  data_shunt.voltage = volt;
+  data_shunt.current = curr;
+  data_shunt.temp    = temp;
+  data_shunt.soc     = soc;
+  data_shunt.remain  = remain;
+  data_shunt.time    = xTaskGetTickCount();
+}
+
+// Callback to set solar charger  measurement data
+void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr) {
+  ESP_LOGI(TAG, "SmartSolar callback!");
+}
+
 /* Public user code ----------------------------------------------------------*/
 
 void app_main(void) {
@@ -297,6 +325,8 @@ void app_main(void) {
 
   // Bluetooth
   blue_init();
+  blue_setcb_sshunt(shunt_cb);
+  blue_setcb_ssolar(solar_cb);
 
   // Init LVGL
   lv_init();
@@ -381,23 +411,32 @@ void app_main(void) {
   lv_chart_refresh(chart);
 #endif
 
-  lv_obj_t* TickLabel = lv_label_create(lv_screen_active());
+  // lv_obj_t* TickLabel = lv_label_create(lv_screen_active());
   while (1) {
     static uint16_t TickCnt = 0;
-    char cBuffer[50];
 
-    ESP_LOGI(TAG, "Loop!");
+    ESP_LOGI(TAG, "Shunt:");
+    ESP_LOGI(TAG, "  U=%d I=%ld", data_shunt.voltage, data_shunt.current);
+    ESP_LOGI(TAG, "  T=%d L=%d", data_shunt.temp, data_shunt.soc);
 
-    snprintf(&cBuffer[0], 50, "Tick: %u", TickCnt);
-    lv_label_set_text(TickLabel, cBuffer);
-    lv_obj_set_width(TickLabel, EINK_SIZE_X);
-    lv_obj_set_style_text_align(TickLabel, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(TickLabel, 0, 10);
+    uint8_t hours = data_shunt.soc / 60;
+    uint8_t mins  = data_shunt.soc - 60 * hours;
+    ESP_LOGI(TAG, "  R=%d:%d", hours, mins);
 
-    gpio_set_level(PIN_LED, 1);
-    lv_refr_now(display);
-    vTaskDelay(250 / portTICK_PERIOD_MS);
-    gpio_set_level(PIN_LED, 0);
+    ESP_LOGI(TAG, "  U=%lu ms ago", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
+
+    // TODO: Move eInk Update to Task
+    // char cBuffer[50];
+    // snprintf(&cBuffer[0], 50, "Tick: %u", TickCnt);
+    // lv_label_set_text(TickLabel, cBuffer);
+    // lv_obj_set_width(TickLabel, EINK_SIZE_X);
+    // lv_obj_set_style_text_align(TickLabel, LV_TEXT_ALIGN_CENTER, 0);
+    // lv_obj_set_pos(TickLabel, 0, 10);
+
+    // gpio_set_level(PIN_LED, 1);
+    // lv_refr_now(display);
+    // vTaskDelay(250 / portTICK_PERIOD_MS);
+    // gpio_set_level(PIN_LED, 0);
 
     vTaskDelay(LOOP_TIME / portTICK_PERIOD_MS);
     TickCnt++;

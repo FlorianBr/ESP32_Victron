@@ -37,7 +37,7 @@ typedef struct __attribute__((packed)) {
 } VICTRON_BLE_RECORD;
 
 // Encrypted Data: Solar Charger Record (0x01)
-typedef struct {
+typedef struct __attribute__((packed)) {
   uint8_t dev_state;
   uint8_t charger_error;
   int16_t bat_voltage; // Voltage in 0.01V
@@ -45,20 +45,18 @@ typedef struct {
   uint16_t yield;      // todays yield in 0.01kWh
   uint16_t pv_power;   // Power in W
   uint16_t load;       // Load in 0.1A (only 9 bits)
-  uint8_t res[4];      // Unused
 } victron_solar_charger_t;
 
 // Encrypted Data: Battery Monitor Record (0x02)
-typedef struct {
-  uint16_t ttg;             // TTG in 1min
+typedef struct __attribute__((packed)) {
+  uint16_t ttg;             // Remaining time in 1min
   int16_t bat_voltage;      // Voltage in 0.01V
   uint16_t alarm;           // Alarm reason
-  uint16_t volt_temp;       // Aux+Mid voltages, temperature
+  uint16_t aux_value;       // Aux+Mid voltages, temperature
   uint8_t aux_in : 2;       // 2 bits aux in
   int32_t bat_current : 22; // Current in 0.1A
   int32_t consumed_ah : 20; // Consumed in 0.1Ah
   uint16_t soc : 10;        // SOC in 0.1%
-  uint16_t reserved : 10;   // Unused
 } victron_battery_monitor_t;
 
 // Encrypted Data: Device States

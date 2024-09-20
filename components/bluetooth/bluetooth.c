@@ -9,6 +9,8 @@
 
 /* Includes ------------------------------------------------------------------*/
 
+#include "./include/bluetooth.h"
+
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -31,7 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 
-#define SCAN_TIME 60    // [s] Scanning time
+#define SCAN_TIME 0     // [s] Scanning time (0=forever)
 #define MAX_NAME_LEN 30 // Max length of name
 #define KEY_SIZE 16     // size of key in byte
 
@@ -56,9 +58,10 @@ static esp_ble_scan_params_t ble_scan_params = {
     .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
     .scan_interval      = 0x50,
     .scan_window        = 0x30,
-    .scan_duplicate     = BLE_SCAN_DUPLICATE_ENABLE, // TODO: Test necessary!
+    .scan_duplicate     = BLE_SCAN_DUPLICATE_DISABLE,
 };
 
+// Note: The Addresses and encryption keys depend on the setup!
 static ENC_KEY_ENTRY enc_keys[] = {
     {{0xdc, 0x4d, 0x47, 0x2a, 0x9b, 0x3e},
      {0x05, 0x10, 0xa3, 0x56, 0xf0, 0x70, 0xb3, 0x86, 0x88, 0xdc, 0x9e, 0x2a, 0x94, 0x34, 0x55, 0x11}},
@@ -66,6 +69,9 @@ static ENC_KEY_ENTRY enc_keys[] = {
     {{0xde, 0x4b, 0xad, 0x98, 0xa0, 0xf2},
      {0x5c, 0x2d, 0x00, 0x0d, 0x3c, 0x1b, 0x8f, 0xe7, 0xf3, 0xcc, 0x0a, 0x86, 0x7a, 0x82, 0x0a, 0x60}},
 };
+
+blue_sshunt_cb_t cb_shunt = NULL;
+blue_ssolar_cb_t cb_solar = NULL;
 
 /* Private function prototypes -----------------------------------------------*/
 
@@ -98,7 +104,6 @@ bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
     ESP_LOGI(TAG, "Record Length 0x%02x is invalid", pFrame->manu_record_length);
     return false;
   }
-  ESP_LOGI(TAG, "Frame is a Victron frame!");
   return true;
 }
 
@@ -111,7 +116,7 @@ bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
 uint8_t* getEncKey(const esp_bd_addr_t Addr) {
   for (size_t i = 0; i < (sizeof(enc_keys) / sizeof(ENC_KEY_ENTRY)); i++) {
     if (memcmp(&Addr[0], &enc_keys[i].Addr[0], sizeof(esp_bd_addr_t)) == 0) {
-      ESP_LOGI(TAG, "Found key at index %d!", i);
+      ESP_LOGD(TAG, "Found key at index %d!", i);
       return &enc_keys[i].Key[0];
     }
   }
@@ -176,32 +181,25 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
            BLEAddr[5]);
 
   // Debug-Print content
-  ESP_LOGI(TAG, "          Name = '%s'", pName);
-  ESP_LOGI(TAG, "          Addr = '%s'", address);
-  ESP_LOGI(TAG, "    Product ID = 0x%04x", pFrame->product_id);
-  ESP_LOGI(TAG, "   Record Type = 0x%02x", pFrame->record_type);
-  ESP_LOGI(TAG, "      Data Cnt = 0x%02x:%02x", pFrame->data_counter_msb, pFrame->data_counter_lsb);
-  ESP_LOGI(TAG, "   Encr Key B0 = 0x%02x", pFrame->encryption_key_0);
+  ESP_LOGD(TAG, "Found '%s' with Address '%s'", pName, address);
+  ESP_LOGD(TAG, "    Product ID = 0x%04x", pFrame->product_id);
+  ESP_LOGD(TAG, "   Record Type = 0x%02x", pFrame->record_type);
+  ESP_LOGD(TAG, "      Data Cnt = 0x%02x:%02x", pFrame->data_counter_msb, pFrame->data_counter_lsb);
+  ESP_LOGD(TAG, "   Encr Key B0 = 0x%02x", pFrame->encryption_key_0);
 
   if (encLen <= 0) {
     ESP_LOGW(TAG, "Length of encrypted data %d invalid!", encLen);
     return;
   }
 
-  ESP_LOGI(TAG, "Encrypted Data:");
-  ESP_LOG_BUFFER_HEXDUMP(TAG, &pFrame->encData, encLen, ESP_LOG_INFO);
-
   // Find encryption key and decrypt data
   uint8_t* pKey = getEncKey(BLEAddr);
   if (NULL != pKey) {
     uint8_t* pDecData = malloc(encLen);
     if (decrytData(&pFrame->encData, pDecData, encLen, pFrame->data_counter_msb, pFrame->data_counter_lsb, pKey)) {
-      ESP_LOGI(TAG, "Decrypted Data:");
-      ESP_LOG_BUFFER_HEXDUMP(TAG, pDecData, encLen, ESP_LOG_INFO);
-
-      // TODO: Update Data Model
       switch (pFrame->record_type) {
         case VREG_RTYPE_SOLAR_CHARGER: {
+#if 0 // TODO: Implement / Check me!
           if (encLen == sizeof(victron_solar_charger_t)) {
             ESP_LOGI(TAG, "Decrypted Data for Solar Charger:");
             victron_solar_charger_t* pData = (victron_solar_charger_t*)pDecData;
@@ -212,14 +210,38 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
             ESP_LOGI(TAG, "    Yield = %d", pData->yield);
             ESP_LOGI(TAG, "    Power = %d", pData->pv_power);
             ESP_LOGI(TAG, "     Load = %d", pData->load);
+            // TODO: Update Data Model
           } else {
             ESP_LOGW(TAG, "Record size mismatch for Solar Charger! %d != %d", encLen, sizeof(victron_solar_charger_t));
           }
+#endif
           break;
         }
         case VREG_RTYPE_BATTERY_MONITOR: {
-          ESP_LOGI(TAG, "Decrypted Data for Battery Monitor:");
+          if (encLen == sizeof(victron_battery_monitor_t)) {
+            uint16_t temp = 0;
 
+            victron_battery_monitor_t* pData = (victron_battery_monitor_t*)pDecData;
+
+            if (pData->alarm != 0) {
+              ESP_LOGW(TAG, "SmartShunt signals an Alarm = 0x%04x", pData->alarm);
+            }
+            switch (pData->aux_in) {
+              case 2: // Temp
+                temp = pData->aux_value;
+                break;
+              default:
+                break;
+            }
+
+            // Update Mains Data Model
+            if (cb_shunt != NULL)
+              cb_shunt(pData->bat_voltage, pData->bat_current, pData->soc, temp, pData->ttg);
+
+          } else {
+            ESP_LOGW(TAG, "Record size mismatch for Battery Monitor! %d != %d", encLen,
+                     sizeof(victron_battery_monitor_t));
+          }
           break;
         }
         default:
@@ -230,14 +252,12 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
     }
     free(pDecData);
   }
-
   return;
 }
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
   switch (event) {
     case ESP_GAP_BLE_SCAN_RESULT_EVT: {
-      //   ESP_LOGI(TAG, "Scan result received");
       esp_ble_gap_cb_param_t* scan_result = (esp_ble_gap_cb_param_t*)param;
       switch (scan_result->scan_rst.search_evt) {
         case ESP_GAP_SEARCH_INQ_RES_EVT: {
@@ -262,7 +282,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
                 ESP_LOGW(TAG, "Advertisement received:");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len,
                                        ESP_LOG_INFO);
-                ESP_LOGW(TAG, "Manufacturer Data:");
+                ESP_LOGI(TAG, "Manufacturer Data:");
                 ESP_LOG_BUFFER_HEXDUMP(TAG, manu_data, manu_data_len, ESP_LOG_INFO);
 #endif
                 char devName[MAX_NAME_LEN];
@@ -284,7 +304,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
           ESP_LOGW(TAG, "Unknown search event 0x%x", scan_result->scan_rst.search_evt);
 
           break;
-      } // switch scan_result->scan_rst.search_evt
+      }
       break;
     }
 
@@ -301,6 +321,14 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
 }
 
 /* Public user code ----------------------------------------------------------*/
+
+void blue_setcb_sshunt(blue_sshunt_cb_t cb) {
+  cb_shunt = cb;
+}
+
+void blue_setcb_ssolar(blue_ssolar_cb_t cb) {
+  cb_solar = cb;
+}
 
 void blue_init() {
   esp_err_t ret;

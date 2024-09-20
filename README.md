@@ -27,10 +27,11 @@ Libraries used:
 - [x] Basic LVGL setup
 - [x] Bluetooth: Device detection
 - [x] Victron: Driver
-- [ ] Victron: Decryption
-- [ ] Victron: Receive smart shunt data
+- [x] Victron: Decryption
+- [x] Victron: Receive smart shunt data
 - [ ] Victron: Receive solar charger data
 - [ ] Victron: Receive charger data
+- [ ] Victron: Refactoring
 - [ ] LVGL: Change Theme to Monochrome
 - [ ] LVGL: Fix display orientation
 - [ ] Display current states
@@ -50,6 +51,7 @@ Libraries used:
 ## Notes
 
 - LV_COLOR_FORMAT_ARGB8888 must be enabled for rotations
+- Unuse Bits/Bytes in the Victron structs are NOT transfered!
 
 ## Useful links
 
