@@ -35,6 +35,14 @@ typedef struct {
   TickType_t time;  // [Tick] Last update
 } data_shunt_t;
 
+typedef struct {
+  uint8_t state;   // Device State
+  uint16_t v_in;   // [0.1V] Input Voltage
+  uint16_t v_out;  // [0.1V] Output Voltage
+  uint32_t offr;   // Off Reason
+  TickType_t time; // [Tick] Last update
+} data_dcdc_t;
+
 /* Private define ------------------------------------------------------------*/
 
 #define LOOP_TIME 5000            // [ms] Main loop time
@@ -50,12 +58,14 @@ typedef struct {
 static const char* TAG = "MAIN";
 static uint8_t einkBuffer[EINK_BUFFER_SIZE];
 static data_shunt_t data_shunt;
+static data_dcdc_t data_dcdc;
 
 /* Private function prototypes -----------------------------------------------*/
 
 static void TaskOSStats(void* pvParameters);
 void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain);
 void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr);
+void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off);
 void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map);
 
 /* Private user code ---------------------------------------------------------*/
@@ -237,6 +247,15 @@ void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const
   data_shunt.time    = xTaskGetTickCount();
 }
 
+// Callback to set DC/DC Converter Data
+void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off) {
+  data_dcdc.state = state;
+  data_dcdc.v_in  = in;
+  data_dcdc.v_out = out;
+  data_dcdc.offr  = off;
+  data_dcdc.time  = xTaskGetTickCount();
+}
+
 // Callback to set solar charger  measurement data
 void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr) {
   ESP_LOGI(TAG, "SmartSolar callback!");
@@ -327,6 +346,7 @@ void app_main(void) {
   blue_init();
   blue_setcb_sshunt(shunt_cb);
   blue_setcb_ssolar(solar_cb);
+  blue_setcb_dcdc(dcdc_cb);
 
   // Init LVGL
   lv_init();
@@ -413,17 +433,16 @@ void app_main(void) {
 
   // lv_obj_t* TickLabel = lv_label_create(lv_screen_active());
   while (1) {
-    static uint16_t TickCnt = 0;
-
-    ESP_LOGI(TAG, "Shunt:");
-    ESP_LOGI(TAG, "  U=%d I=%ld", data_shunt.voltage, data_shunt.current);
-    ESP_LOGI(TAG, "  T=%d L=%d", data_shunt.temp, data_shunt.soc);
+    // static uint16_t TickCnt = 0;
 
     uint8_t hours = data_shunt.soc / 60;
     uint8_t mins  = data_shunt.soc - 60 * hours;
-    ESP_LOGI(TAG, "  R=%d:%d", hours, mins);
+    ESP_LOGI(TAG, "Shunt: U=%d I=%ld T=%d L=%d R=%02d:%0d (%lu)", data_shunt.voltage, data_shunt.current,
+             data_shunt.temp, data_shunt.soc, hours, mins,
+             portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
 
-    ESP_LOGI(TAG, "  U=%lu ms ago", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
+    ESP_LOGI(TAG, "DCDC: In=%d Out=%d Off=0x%lx State=0x%02x  (%lu)", data_dcdc.v_in, data_dcdc.v_out, data_dcdc.offr,
+             data_dcdc.state, portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
 
     // TODO: Move eInk Update to Task
     // char cBuffer[50];
@@ -439,6 +458,6 @@ void app_main(void) {
     // gpio_set_level(PIN_LED, 0);
 
     vTaskDelay(LOOP_TIME / portTICK_PERIOD_MS);
-    TickCnt++;
+    // TickCnt++;
   }
 }
