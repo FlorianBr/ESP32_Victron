@@ -29,8 +29,8 @@ Libraries used:
 - [x] Victron: Driver
 - [x] Victron: Decryption
 - [x] Victron: Receive smart shunt data
-- [ ] Victron: Receive solar charger data
-- [ ] Victron: Receive charger data
+- [x] Victron: Receive solar charger data
+- [x] Victron: Receive charger data
 - [ ] Victron: Refactoring
 - [ ] LVGL: Change Theme to Monochrome
 - [ ] LVGL: Fix display orientation
