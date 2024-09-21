@@ -33,7 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 
-#define SCAN_TIME 15    // [s] Scanning time (0=forever)
+#define SCAN_TIME 0     // [s] Scanning time (0=forever)
 #define MAX_NAME_LEN 30 // Max length of name
 #define KEY_SIZE 16     // size of key in byte
 
@@ -71,7 +71,7 @@ static ENC_KEY_ENTRY enc_keys[] = {
      {0xb7, 0x35, 0xd0, 0xe4, 0x2e, 0x30, 0xd5, 0x0f, 0x41, 0xa4, 0x13, 0x62, 0x14, 0x02, 0xf0, 0xe8}},
     // SmartSolar
     {{0xdc, 0x4d, 0x47, 0x2a, 0x9b, 0x3e},
-     {0x05, 0x10, 0xa3, 0x56, 0xf0, 0x70, 0xb3, 0x86, 0x88, 0xdc, 0x9e, 0x2a, 0x94, 0x34, 0x55, 0x11}},
+     {0xb5, 0x10, 0xa3, 0x56, 0xf0, 0x70, 0xb3, 0x86, 0x88, 0xdc, 0x9e, 0x2a, 0x94, 0x34, 0x55, 0x11}},
 };
 
 blue_sshunt_cb_t cb_shunt = NULL;
@@ -80,12 +80,12 @@ blue_dcdc_cb_t cb_dcdc    = NULL;
 
 /* Private function prototypes -----------------------------------------------*/
 
+bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame);
 uint8_t* getEncKey(const esp_bd_addr_t Addr);
 bool decrytData(const uint8_t* pEncData, uint8_t* pDecData, size_t length, const uint8_t cnt1, const uint8_t cnt2,
                 const uint8_t* pKey);
-static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param);
-bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame);
 void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen, const esp_bd_addr_t BLEAddr);
+static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param);
 
 /* Private user code ---------------------------------------------------------*/
 
@@ -105,7 +105,8 @@ bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
     return false;
   }
 #if 0
-  // Some frame have a different value but are still valid
+  // Some frames have a different value but are still valid
+  // The SmartSolar has a 0x00 instead of a 0x00 for example
   if (pFrame->manu_record_length != MANUFACTURER_RLEN) {
     ESP_LOGW(TAG, "Record Length 0x%02x is invalid", pFrame->manu_record_length);
     return false;
@@ -182,6 +183,7 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
   const int16_t encLen = (1 + frameLen - sizeof(VICTRON_BLE_RECORD));
 
   // Debug-Print content
+  ESP_LOGD(TAG, "Victron Frame Header:");
   ESP_LOGD(TAG, "    Product ID = 0x%04x", pFrame->product_id);
   ESP_LOGD(TAG, "   Record Type = 0x%02x", pFrame->record_type);
   ESP_LOGD(TAG, "      Data Cnt = 0x%02x:%02x", pFrame->data_counter_msb, pFrame->data_counter_lsb);
@@ -195,30 +197,31 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
   // Find encryption key and decrypt data
   uint8_t* pKey = getEncKey(BLEAddr);
   if (NULL != pKey) {
+    if (*pKey != pFrame->encryption_key_0) {
+      ESP_LOGW(TAG, "Key Byte 0 mismatch: 0x%02x != 0x%02x (PID=0x%04x)", *pKey, pFrame->encryption_key_0,
+               pFrame->product_id);
+      return;
+    }
+
     uint8_t* pDecData = malloc(encLen);
+
     if (decrytData(&pFrame->encData, pDecData, encLen, pFrame->data_counter_msb, pFrame->data_counter_lsb, pKey)) {
       ESP_LOGD(TAG, "Decrypted Data:");
       ESP_LOG_BUFFER_HEXDUMP(TAG, pDecData, encLen, ESP_LOG_DEBUG);
 
       switch (pFrame->record_type) {
-#if 0
         case VREG_RTYPE_SOLAR_CHARGER: {
           if (encLen == sizeof(victron_solar_charger_t)) {
             victron_solar_charger_t* pData = (victron_solar_charger_t*)pDecData;
-            ESP_LOGI(TAG, "    State = 0x%02x", pData->dev_state);
-            ESP_LOGI(TAG, "    Error = 0x%02x", pData->charger_error);
-            ESP_LOGI(TAG, "  Voltage = %d", pData->bat_voltage);
-            ESP_LOGI(TAG, "  Current = %d", pData->bat_current);
-            ESP_LOGI(TAG, "    Yield = %d", pData->yield);
-            ESP_LOGI(TAG, "    Power = %d", pData->pv_power);
-            ESP_LOGI(TAG, "     Load = %d", pData->load);
-            // TODO: Update Data Model
+            if (cb_solar != NULL) {
+              cb_solar(pData->dev_state, pData->bat_voltage, pData->bat_current, pData->pv_power,
+                       (pData->charger_error != 0));
+            }
           } else {
             ESP_LOGW(TAG, "Record size mismatch for Solar Charger! %d != %d", encLen, sizeof(victron_solar_charger_t));
           }
           break;
         }
-#endif
         case VREG_RTYPE_BATTERY_MONITOR: {
           if (encLen == sizeof(victron_battery_monitor_t)) {
             uint16_t temp                    = 0;
@@ -233,7 +236,7 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
 
             // Update Mains Data Model
             if (cb_shunt != NULL) {
-              cb_shunt(pData->bat_voltage, pData->bat_current, pData->soc, temp, pData->ttg);
+              cb_shunt(pData->bat_voltage, pData->bat_current, pData->soc, temp, pData->ttg, (pData->alarm != 0));
             }
           } else {
             ESP_LOGW(TAG, "Record size mismatch for Battery Monitor! %d != %d", encLen,
@@ -249,7 +252,8 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
             }
             // Update Mains Data Model
             if (cb_dcdc != NULL) {
-              cb_dcdc(pData->dev_state, pData->in_voltage, pData->out_voltage, pData->offreason);
+              cb_dcdc(pData->dev_state, pData->in_voltage, pData->out_voltage, pData->offreason,
+                      (pData->charger_error != 0));
             }
           } else {
             ESP_LOGW(TAG, "Record size mismatch for DC-DC Converter! %d != %d", encLen, sizeof(victron_dcdc_t));
@@ -260,6 +264,8 @@ void parseVictronFrame(const VICTRON_BLE_RECORD* pFrame, const uint16_t frameLen
           ESP_LOGW(TAG, "Record type 0x%02x not supported!", pFrame->record_type);
           break;
       }
+    } else {
+      ESP_LOGE(TAG, "Unable to decrypted Data!");
     }
     free(pDecData);
   }
@@ -295,13 +301,6 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
                          scan_result->scan_rst.bda[4], scan_result->scan_rst.bda[5]);
 
                 ESP_LOGD(TAG, "Found '%s' with address '%s'", adv_name, address);
-#if 0
-                ESP_LOGW(TAG, "Advertisement received:");
-                ESP_LOG_BUFFER_HEXDUMP(TAG, scan_result->scan_rst.ble_adv, scan_result->scan_rst.adv_data_len,
-                                       ESP_LOG_INFO);
-                ESP_LOGI(TAG, "Manufacturer Data:");
-                ESP_LOG_BUFFER_HEXDUMP(TAG, manu_data, manu_data_len, ESP_LOG_INFO);
-#endif
                 parseVictronFrame((VICTRON_BLE_RECORD*)manu_data, manu_data_len, scan_result->scan_rst.bda);
               } else {
                 ESP_LOGW(TAG, "Device '%s' is not sending a valid victron frame!", adv_name);
@@ -313,8 +312,8 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
           break;
         }
         case ESP_GAP_SEARCH_INQ_CMPL_EVT:
-          // ESP_LOGI(TAG, "Scanning loop ended, restarting!");
-          // esp_ble_gap_start_scanning(SCAN_TIME);
+          ESP_LOGI(TAG, "Scanning loop ended, restarting!");
+          esp_ble_gap_start_scanning(SCAN_TIME);
           break;
         default:
           ESP_LOGW(TAG, "Unknown search event 0x%x", scan_result->scan_rst.search_evt);

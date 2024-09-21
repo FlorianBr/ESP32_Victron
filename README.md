@@ -52,6 +52,7 @@ Libraries used:
 
 - LV_COLOR_FORMAT_ARGB8888 must be enabled for rotations
 - Unuse Bits/Bytes in the Victron structs are NOT transfered!
+- For some reason the Android App showed the first byte of the encryption key of SmartSolar incorrectly. Instead of b5 it showed only 5.
 
 ## Useful links
 

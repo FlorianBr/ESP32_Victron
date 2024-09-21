@@ -15,16 +15,19 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 
+#include "stdbool.h"
 #include "stdint.h"
 
 /* Private includes ----------------------------------------------------------*/
 
 /* Exported types ------------------------------------------------------------*/
 
+typedef void (*blue_ssolar_cb_t)(const uint8_t state, const uint16_t volt, const uint16_t curr, const uint16_t power,
+                                 const bool error);
 typedef void (*blue_sshunt_cb_t)(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp,
-                                 const uint16_t remain);
-typedef void (*blue_ssolar_cb_t)(const uint8_t state, const uint16_t volt, const uint16_t curr);
-typedef void (*blue_dcdc_cb_t)(const uint8_t state, const uint16_t inp, const uint16_t outp, const uint32_t offr);
+                                 const uint16_t remain, const bool error);
+typedef void (*blue_dcdc_cb_t)(const uint8_t state, const uint16_t inp, const uint16_t outp, const uint32_t offr,
+                               const bool error);
 
 /* Exported constants --------------------------------------------------------*/
 

@@ -32,6 +32,7 @@ typedef struct {
   uint16_t soc;     // [0.1%] Battery capacity
   uint16_t temp;    // [0.1dC] Temperature
   uint16_t remain;  // [min] Remaining time
+  bool error;       // Error occured
   TickType_t time;  // [Tick] Last update
 } data_shunt_t;
 
@@ -40,8 +41,18 @@ typedef struct {
   uint16_t v_in;   // [0.1V] Input Voltage
   uint16_t v_out;  // [0.1V] Output Voltage
   uint32_t offr;   // Off Reason
+  bool error;      // Error occured
   TickType_t time; // [Tick] Last update
 } data_dcdc_t;
+
+typedef struct {
+  uint8_t state;    // Device State
+  uint16_t voltage; // [0.01V] Voltage
+  uint16_t current; // [0.1A] current
+  uint16_t power;   // [W] Power
+  bool error;       // Error occured
+  TickType_t time;  // [Tick] Last update
+} data_solar_t;
 
 /* Private define ------------------------------------------------------------*/
 
@@ -59,13 +70,17 @@ static const char* TAG = "MAIN";
 static uint8_t einkBuffer[EINK_BUFFER_SIZE];
 static data_shunt_t data_shunt;
 static data_dcdc_t data_dcdc;
+static data_solar_t data_solar;
 
 /* Private function prototypes -----------------------------------------------*/
 
 static void TaskOSStats(void* pvParameters);
-void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain);
-void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr);
-void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off);
+
+void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain,
+              const bool error);
+void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr, const uint16_t power, const bool error);
+void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off, const bool error);
+
 void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map);
 
 /* Private user code ---------------------------------------------------------*/
@@ -238,27 +253,35 @@ void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
 }
 
 // Callback to set smartshunts measurement data
-void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain) {
+void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain,
+              const bool error) {
   data_shunt.voltage = volt;
   data_shunt.current = curr;
-  data_shunt.temp    = temp;
   data_shunt.soc     = soc;
+  data_shunt.temp    = temp;
   data_shunt.remain  = remain;
+  data_shunt.error   = error;
   data_shunt.time    = xTaskGetTickCount();
 }
 
 // Callback to set DC/DC Converter Data
-void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off) {
+void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off, const bool error) {
   data_dcdc.state = state;
   data_dcdc.v_in  = in;
   data_dcdc.v_out = out;
   data_dcdc.offr  = off;
+  data_dcdc.error = error;
   data_dcdc.time  = xTaskGetTickCount();
 }
 
 // Callback to set solar charger  measurement data
-void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr) {
-  ESP_LOGI(TAG, "SmartSolar callback!");
+void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr, const uint16_t power, const bool error) {
+  data_solar.state   = state;
+  data_solar.voltage = volt;
+  data_solar.current = curr;
+  data_solar.power   = power;
+  data_solar.error   = error;
+  data_solar.time    = xTaskGetTickCount();
 }
 
 /* Public user code ----------------------------------------------------------*/
@@ -435,14 +458,28 @@ void app_main(void) {
   while (1) {
     // static uint16_t TickCnt = 0;
 
+    // Print current Data
+    ESP_LOGI(TAG, "Shunt: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
     uint8_t hours = data_shunt.soc / 60;
     uint8_t mins  = data_shunt.soc - 60 * hours;
-    ESP_LOGI(TAG, "Shunt: U=%d I=%ld T=%d L=%d R=%02d:%0d (%lu)", data_shunt.voltage, data_shunt.current,
-             data_shunt.temp, data_shunt.soc, hours, mins,
-             portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
-
-    ESP_LOGI(TAG, "DCDC: In=%d Out=%d Off=0x%lx State=0x%02x  (%lu)", data_dcdc.v_in, data_dcdc.v_out, data_dcdc.offr,
-             data_dcdc.state, portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
+    ESP_LOGI(TAG, "   U=%d", data_shunt.voltage);
+    ESP_LOGI(TAG, "   I=%ld", data_shunt.current);
+    ESP_LOGI(TAG, "   T=%d", data_shunt.temp);
+    ESP_LOGI(TAG, "   L=%d", data_shunt.soc);
+    ESP_LOGI(TAG, "   E=0x%02x", data_shunt.error);
+    ESP_LOGI(TAG, "   R=%02d:%0d", hours, mins);
+    ESP_LOGI(TAG, "DCDC: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
+    ESP_LOGI(TAG, "   I=%d", data_dcdc.v_in);
+    ESP_LOGI(TAG, "   O=%d", data_dcdc.v_out);
+    ESP_LOGI(TAG, " Off=0x%lx", data_dcdc.offr);
+    ESP_LOGI(TAG, "   E=0x%02x", data_dcdc.error);
+    ESP_LOGI(TAG, "   S=0x%02x", data_dcdc.state);
+    ESP_LOGI(TAG, "Solar: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_solar.time));
+    ESP_LOGI(TAG, "   U=%d", data_solar.voltage);
+    ESP_LOGI(TAG, "   I=%d", data_solar.current);
+    ESP_LOGI(TAG, "   P=%d", data_solar.power);
+    ESP_LOGI(TAG, "   S=0x%02x", data_solar.state);
+    ESP_LOGI(TAG, "   E=0x%02x", data_solar.error);
 
     // TODO: Move eInk Update to Task
     // char cBuffer[50];
