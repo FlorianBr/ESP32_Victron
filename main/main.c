@@ -56,25 +56,32 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 
-#define LOOP_TIME 5000            // [ms] Main loop time
+#define LOOP_TIME (5 * 1000)      // [ms] Main loop time
+#define EINK_UPD_TIME (15 * 1000) // [ms] Update time for the display
+#define EINK_MAX_LINESIZE 50      // Max size of one Line
 #define OSSTATS_ARRAY_SIZE_OFFS 5 // OS-Statistics: Increase this if print_real_time_stats returns ESP_ERR_INVALID_SIZE
 #define OSSTATS_TIME 30000        // [ms] OS-Statistics cycle time
 
 #define EINK_BUFFER_SIZE ((EINK_SIZE_X / 8 * EINK_SIZE_Y) + 8) // Buffer Size: 1 bit per pixel plus 8 byte for LVGL
+
+#define FONT_HEIGHT 9 // [px] Height of the default font
+#define Y_SPACE 10    // [px] Y distance between blocks
 
 /* Private macro -------------------------------------------------------------*/
 
 /* Private variables ---------------------------------------------------------*/
 
 static const char* TAG = "MAIN";
-static uint8_t einkBuffer[EINK_BUFFER_SIZE];
-static data_shunt_t data_shunt;
-static data_dcdc_t data_dcdc;
-static data_solar_t data_solar;
+
+static uint8_t einkBuffer[EINK_BUFFER_SIZE]; // Pixel Buffer for the panel
+static data_shunt_t data_shunt;              // Data for the shunt / battery monitor
+static data_dcdc_t data_dcdc;                // Data for DC/DC converter
+static data_solar_t data_solar;              // Data for solar loader
 
 /* Private function prototypes -----------------------------------------------*/
 
 static void TaskOSStats(void* pvParameters);
+static void TaskEInkUpdate(void* pvParameters);
 
 void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain,
               const bool error);
@@ -83,7 +90,36 @@ void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const u
 
 void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map);
 
+char* solar_state2text(uint8_t state);
+
 /* Private user code ---------------------------------------------------------*/
+
+// Covert the numeric state of a SmartSolar to text
+char* solar_state2text(uint8_t state) {
+  switch (state) {
+    case 0:
+      return "Off";
+      break;
+    case 1:
+      return "Low Power";
+      break;
+    case 2:
+      return "Fault";
+      break;
+    case 3:
+      return "Bulk";
+      break;
+    case 4:
+      return "Absorption";
+      break;
+    case 5:
+      return "Float";
+      break;
+    default:
+      return "Unknown";
+      break;
+  }
+}
 
 // Task to print OS statistics
 static void TaskOSStats(void* pvParameters) {
@@ -243,6 +279,151 @@ static void TaskOSStats(void* pvParameters) {
   } // while (1)
 } // TaskOSStats()
 
+// Task to update the EInk content
+static void TaskEInkUpdate(void* pvParameters) {
+  char cBuffer[EINK_MAX_LINESIZE];
+
+  // Init LVGL
+  lv_init();
+  lv_display_t* display = lv_display_create(EINK_SIZE_X, EINK_SIZE_Y);
+  lv_display_set_flush_cb(display, flush_cb);
+  lv_display_set_buffers(display, &einkBuffer[0], NULL, EINK_BUFFER_SIZE, LV_DISPLAY_RENDER_MODE_FULL);
+  lv_obj_set_style_bg_color(lv_screen_active(), lv_color_white(), LV_PART_ANY);
+  lv_obj_set_style_text_color(lv_screen_active(), lv_color_black(), LV_PART_ANY);
+
+  eink_fillscreen(0x00);
+
+  // Header text style
+  lv_style_t style_header;
+  lv_style_init(&style_header);
+  lv_style_set_text_color(&style_header, lv_color_white());
+  lv_style_set_bg_color(&style_header, lv_color_black());
+  lv_style_set_bg_opa(&style_header, 0xFF);
+
+  // TODO: Refactoring, move all the labels into a struct and create/update in a loop
+
+  // Draw outer frame
+  static lv_point_precise_t frame_points[] = {
+      {0, 0}, {EINK_SIZE_X - 1, 0}, {EINK_SIZE_X - 1, EINK_SIZE_Y - 1}, {0, EINK_SIZE_Y - 1}, {0, 0}};
+
+  static lv_style_t style_line;
+  lv_style_init(&style_line);
+  lv_style_set_line_width(&style_line, 1);
+
+  lv_obj_t* frame_line;
+  frame_line = lv_line_create(lv_screen_active());
+  lv_line_set_points(frame_line, frame_points, sizeof(frame_points) / sizeof(lv_point_precise_t));
+  lv_obj_add_style(frame_line, &style_line, 0);
+
+  // The Labels
+  lv_obj_t* Bat_Header = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Cap    = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Volt   = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Cur    = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Remain = lv_label_create(lv_screen_active());
+
+  lv_obj_t* Solar_Header = lv_label_create(lv_screen_active());
+  lv_obj_t* Solar_Power  = lv_label_create(lv_screen_active());
+  lv_obj_t* Solar_Cur    = lv_label_create(lv_screen_active());
+  lv_obj_t* Solar_State  = lv_label_create(lv_screen_active());
+
+  lv_obj_add_style(Bat_Header, &style_header, 0);
+  lv_obj_add_style(Solar_Header, &style_header, 0);
+
+  // Battery Data
+  snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "Battery");
+  lv_label_set_text(Bat_Header, cBuffer);
+  lv_obj_set_width(Bat_Header, lv_pct(100));
+  lv_obj_set_style_text_align(Bat_Header, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Bat_Header, 0, 0);
+
+  lv_label_set_text(Bat_Cap, "---");
+  lv_obj_set_width(Bat_Cap, lv_pct(50));
+  lv_obj_set_style_text_align(Bat_Cap, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Bat_Cap, 0, FONT_HEIGHT);
+
+  lv_label_set_text(Bat_Volt, "---");
+  lv_obj_set_width(Bat_Volt, lv_pct(50));
+  lv_obj_set_style_text_align(Bat_Volt, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Bat_Volt, lv_pct(50), FONT_HEIGHT);
+
+  lv_label_set_text(Bat_Cur, "---");
+  lv_obj_set_width(Bat_Cur, lv_pct(50));
+  lv_obj_set_style_text_align(Bat_Cur, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Bat_Cur, 0, 2 * FONT_HEIGHT);
+
+  lv_label_set_text(Bat_Remain, "---");
+  lv_obj_set_width(Bat_Remain, lv_pct(50));
+  lv_obj_set_style_text_align(Bat_Remain, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Bat_Remain, lv_pct(50), 2 * FONT_HEIGHT);
+
+  // Solar Data
+  snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "Solar");
+  lv_label_set_text(Solar_Header, cBuffer);
+  lv_obj_set_width(Solar_Header, lv_pct(100));
+  lv_obj_set_style_text_align(Solar_Header, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Solar_Header, 0, 3 * FONT_HEIGHT);
+
+  lv_label_set_text(Solar_Power, "---");
+  lv_obj_set_width(Solar_Power, lv_pct(50));
+  lv_obj_set_style_text_align(Solar_Power, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Solar_Power, 0, 4 * FONT_HEIGHT);
+
+  lv_label_set_text(Solar_Cur, "---");
+  lv_obj_set_width(Solar_Cur, lv_pct(50));
+  lv_obj_set_style_text_align(Solar_Cur, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Solar_Cur, lv_pct(50), 4 * FONT_HEIGHT);
+
+  lv_label_set_text(Solar_State, "---");
+  lv_obj_set_width(Solar_State, lv_pct(100));
+  lv_obj_set_style_text_align(Solar_State, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(Solar_State, 0, 5 * FONT_HEIGHT);
+
+  lv_refr_now(display);
+
+  while (1) {
+    vTaskDelay(EINK_UPD_TIME / portTICK_PERIOD_MS);
+
+    // Update Battery Data
+    snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%d%%", (data_shunt.soc / 10));
+    lv_label_set_text(Bat_Cap, cBuffer);
+
+    snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%.1fV", ((double)data_shunt.voltage / 100));
+    lv_label_set_text(Bat_Volt, cBuffer);
+
+    if (data_shunt.current > 0) {
+      snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%.2fA", ((double)data_shunt.current / 1000));
+    } else {
+      snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%.2fA", ((double)data_shunt.current / 1000));
+    }
+    lv_label_set_text(Bat_Cur, cBuffer);
+
+    if (data_shunt.current > 0) {
+      snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "-");
+    } else {
+      uint8_t hours = data_shunt.soc / 60;
+      uint8_t mins  = data_shunt.soc - 60 * hours;
+      snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%d:%02d", hours, mins);
+    }
+    lv_label_set_text(Bat_Remain, cBuffer);
+
+    // Update Solar Data
+    snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%dW", data_solar.power);
+    lv_label_set_text(Solar_Power, cBuffer);
+
+    snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%.2fA", ((double)data_solar.current / 10));
+    lv_label_set_text(Solar_Cur, cBuffer);
+
+    snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%s", solar_state2text(data_solar.state));
+    lv_label_set_text(Solar_State, cBuffer);
+
+    // Update Display
+    gpio_set_level(PIN_LED, 1);
+    lv_refr_now(display);
+    gpio_set_level(PIN_LED, 0);
+  }
+}
+
 // Send LVGL data to the display
 void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
   eink_setbuffer(px_map + 8, EINK_BUFFER_SIZE - 8);
@@ -371,93 +552,10 @@ void app_main(void) {
   blue_setcb_ssolar(solar_cb);
   blue_setcb_dcdc(dcdc_cb);
 
-  // Init LVGL
-  lv_init();
-  lv_display_t* display = lv_display_create(EINK_SIZE_X, EINK_SIZE_Y);
-  lv_display_set_flush_cb(display, flush_cb);
-  lv_display_set_buffers(display, &einkBuffer[0], NULL, EINK_BUFFER_SIZE, LV_DISPLAY_RENDER_MODE_FULL);
-  // lv_display_set_rotation(display, LV_DISPLAY_ROTATION_90);
-  lv_obj_set_style_bg_color(lv_screen_active(), lv_color_white(), LV_PART_ANY);
-  lv_obj_set_style_text_color(lv_screen_active(), lv_color_black(), LV_PART_ANY);
+  // Start Panel Update Task
+  xTaskCreate(TaskEInkUpdate, "EInk Update", 4096, NULL, tskIDLE_PRIORITY, NULL);
 
-#if 0 // Rotated Hello
-  lv_obj_t* helloLabel = lv_label_create(lv_screen_active());
-  lv_label_set_text(helloLabel, "Hello");
-  lv_obj_set_style_transform_rotation(helloLabel, -900, 0);
-  lv_obj_set_width(helloLabel, EINK_SIZE_X);
-  lv_obj_set_style_text_align(helloLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(helloLabel, LV_ALIGN_CENTER, 50, -10);
-#endif
-
-#if 1 // Regular World
-  lv_obj_t* helloLabel2 = lv_label_create(lv_screen_active());
-  lv_label_set_text(helloLabel2, "World");
-  lv_obj_set_width(helloLabel2, EINK_SIZE_X);
-  lv_obj_set_style_text_align(helloLabel2, LV_TEXT_ALIGN_CENTER, 0);
-  // lv_obj_align(helloLabel2, LV_ALIGN_CENTER, 0, -10);
-#endif
-
-#if 1 // Outer Frame
-  {
-    static lv_point_precise_t line_points[] = {
-        {0, 0}, {EINK_SIZE_X - 2, 0}, {EINK_SIZE_X - 2, EINK_SIZE_Y - 2}, {0, EINK_SIZE_Y - 2}, {0, 0}, {20, 0},
-        {0, 20}};
-
-    static lv_style_t style_line;
-    lv_style_init(&style_line);
-    lv_style_set_line_width(&style_line, 1);
-
-    lv_obj_t* line1;
-    line1 = lv_line_create(lv_screen_active());
-    lv_line_set_points(line1, line_points, 7);
-    lv_obj_add_style(line1, &style_line, 0);
-    lv_obj_center(line1);
-  }
-#endif
-
-#if 1 // Diagonal lines
-  {
-    static lv_point_precise_t line_points[] = {
-        {0, 0}, {EINK_SIZE_X - 2, EINK_SIZE_Y - 2}, {0, EINK_SIZE_Y - 2}, {EINK_SIZE_X - 2, 0}};
-
-    static lv_style_t style_line;
-    lv_style_init(&style_line);
-    lv_style_set_line_width(&style_line, 1);
-
-    lv_obj_t* line1;
-    line1 = lv_line_create(lv_screen_active());
-    lv_line_set_points(line1, line_points, 4);
-    lv_obj_add_style(line1, &style_line, 0);
-    lv_obj_center(line1);
-  }
-#endif
-
-#if 0 // Chart Test
-  lv_obj_t* chart;
-  chart = lv_chart_create(lv_screen_active());
-  lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-  lv_obj_set_size(chart, 50, 100);
-  lv_obj_set_style_pad_all(chart, 0, 0);
-  lv_obj_set_style_radius(chart, 0, 0);
-  lv_obj_center(chart);
-  lv_chart_set_div_line_count(chart, 10, 10);
-
-  lv_chart_series_t* ser1 = lv_chart_add_series(chart, lv_color_black(), LV_CHART_AXIS_PRIMARY_Y);
-
-  for (uint32_t i = 0; i < 10; i++) {
-    /*Set the next points on 'ser1'*/
-    lv_chart_set_next_value(chart, ser1, i * 10);
-  }
-  lv_chart_set_next_value(chart, ser1, 100);
-  lv_chart_set_next_value(chart, ser1, 100);
-  lv_obj_set_style_transform_rotation(chart, -900, 0);
-  lv_chart_refresh(chart);
-#endif
-
-  // lv_obj_t* TickLabel = lv_label_create(lv_screen_active());
   while (1) {
-    // static uint16_t TickCnt = 0;
-
     // Print current Data
     ESP_LOGI(TAG, "Shunt: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
     uint8_t hours = data_shunt.soc / 60;
@@ -481,20 +579,6 @@ void app_main(void) {
     ESP_LOGI(TAG, "   S=0x%02x", data_solar.state);
     ESP_LOGI(TAG, "   E=0x%02x", data_solar.error);
 
-    // TODO: Move eInk Update to Task
-    // char cBuffer[50];
-    // snprintf(&cBuffer[0], 50, "Tick: %u", TickCnt);
-    // lv_label_set_text(TickLabel, cBuffer);
-    // lv_obj_set_width(TickLabel, EINK_SIZE_X);
-    // lv_obj_set_style_text_align(TickLabel, LV_TEXT_ALIGN_CENTER, 0);
-    // lv_obj_set_pos(TickLabel, 0, 10);
-
-    // gpio_set_level(PIN_LED, 1);
-    // lv_refr_now(display);
-    // vTaskDelay(250 / portTICK_PERIOD_MS);
-    // gpio_set_level(PIN_LED, 0);
-
     vTaskDelay(LOOP_TIME / portTICK_PERIOD_MS);
-    // TickCnt++;
   }
 }
