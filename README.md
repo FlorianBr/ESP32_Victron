@@ -39,6 +39,7 @@ Libraries used:
 - [ ] Display solar panel power
 - [ ] Display battery graph
 - [ ] Display solar graph
+- [ ] Data: Average data
 
 ### Maybe
 

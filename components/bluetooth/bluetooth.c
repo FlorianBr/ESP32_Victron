@@ -97,7 +97,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param);
  */
 bool isVictronFrame(const VICTRON_BLE_RECORD* pFrame) {
   if (pFrame->manu_id != MANUFACTURER_ID) {
-    ESP_LOGW(TAG, "Manufacturer 0x%04x is invalid", pFrame->manu_id);
+    ESP_LOGD(TAG, "Manufacturer 0x%04x is invalid", pFrame->manu_id);
     return false;
   }
   if (pFrame->manu_record_type != MANUFACTURER_RTYPE) {
@@ -303,10 +303,10 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) 
                 ESP_LOGD(TAG, "Found '%s' with address '%s'", adv_name, address);
                 parseVictronFrame((VICTRON_BLE_RECORD*)manu_data, manu_data_len, scan_result->scan_rst.bda);
               } else {
-                ESP_LOGW(TAG, "Device '%s' is not sending a valid victron frame!", adv_name);
+                ESP_LOGD(TAG, "Device '%s' is not sending a valid victron frame!", adv_name);
               }
             } else {
-              ESP_LOGI(TAG, "Manufacturer data too small! %d < %d", manu_data_len, sizeof(VICTRON_BLE_RECORD));
+              ESP_LOGD(TAG, "Manufacturer data too small! %d < %d", manu_data_len, sizeof(VICTRON_BLE_RECORD));
             }
           }
           break;

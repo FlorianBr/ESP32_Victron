@@ -28,6 +28,20 @@
         "esp_log.h": "c",
         "lvgl.h": "c",
         "stdint.h": "c",
-        "compare": "c"
+        "compare": "c",
+        "lv_obj_private.h": "c",
+        "bootloader_random.h": "c",
+        "*.tcc": "c",
+        "charconv": "c",
+        "chrono": "c",
+        "optional": "c",
+        "ratio": "c",
+        "system_error": "c",
+        "array": "c",
+        "functional": "c",
+        "regex": "c",
+        "tuple": "c",
+        "type_traits": "c",
+        "utility": "c"
     }
 }

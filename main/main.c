@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -56,11 +57,13 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 
-#define LOOP_TIME (5 * 1000)      // [ms] Main loop time
-#define EINK_UPD_TIME (15 * 1000) // [ms] Update time for the display
-#define EINK_MAX_LINESIZE 50      // Max size of one Line
-#define OSSTATS_ARRAY_SIZE_OFFS 5 // OS-Statistics: Increase this if print_real_time_stats returns ESP_ERR_INVALID_SIZE
-#define OSSTATS_TIME 30000        // [ms] OS-Statistics cycle time
+// #define ENABLE_TASK_STATS          // Enable task statistic output
+#define LOOP_TIME (5 * 1000)       // [ms] Main loop time
+#define EINK_UPD_TIME (15 * 1000)  // [ms] Update time for the display
+#define GRAPH_UPD_TIME (60 * 1000) // [ms] Update time for the graphs
+#define EINK_MAX_LINESIZE 50       // Max size of one Line
+#define OSSTATS_ARRAY_SIZE_OFFS 5  // OS-Statistics: Increase this if print_real_time_stats returns ESP_ERR_INVALID_SIZE
+#define OSSTATS_TIME 30000         // [ms] OS-Statistics cycle time
 
 #define EINK_BUFFER_SIZE ((EINK_SIZE_X / 8 * EINK_SIZE_Y) + 8) // Buffer Size: 1 bit per pixel plus 8 byte for LVGL
 
@@ -73,15 +76,23 @@ typedef struct {
 
 static const char* TAG = "MAIN";
 
-static uint8_t einkBuffer[EINK_BUFFER_SIZE]; // Pixel Buffer for the panel
-static data_shunt_t data_shunt;              // Data for the shunt / battery monitor
-static data_dcdc_t data_dcdc;                // Data for DC/DC converter
-static data_solar_t data_solar;              // Data for solar loader
+static uint8_t einkBuffer[EINK_BUFFER_SIZE];     // Pixel Buffer for the panel
+static data_shunt_t data_shunt;                  // Data for the shunt / battery monitor
+static data_dcdc_t data_dcdc;                    // Data for DC/DC converter
+static data_solar_t data_solar;                  // Data for solar loader
+static lv_obj_t* bat_chart               = NULL; // The battery capacity chart
+static lv_chart_series_t* bat_cap_data   = NULL; // The battery capacity chart data
+static lv_obj_t* solar_chart             = NULL; // The solar current chart
+static lv_chart_series_t* solar_cur_data = NULL; // The solar current chart data
+static SemaphoreHandle_t eink_sem;               // EInk semaphore handle
 
 /* Private function prototypes -----------------------------------------------*/
 
+#ifdef ENABLE_TASK_STATS
 static void TaskOSStats(void* pvParameters);
+#endif
 static void TaskEInkUpdate(void* pvParameters);
+static void TaskGraphUpdate(void* pvParameters);
 
 void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain,
               const bool error);
@@ -95,6 +106,7 @@ char* solar_state2text(uint8_t state);
 /* Private user code ---------------------------------------------------------*/
 
 // Covert the numeric state of a SmartSolar to text
+// TODO: Move to victron component
 char* solar_state2text(uint8_t state) {
   switch (state) {
     case 0:
@@ -121,6 +133,7 @@ char* solar_state2text(uint8_t state) {
   }
 }
 
+#ifdef ENABLE_TASK_STATS
 // Task to print OS statistics
 static void TaskOSStats(void* pvParameters) {
   while (1) {
@@ -256,7 +269,7 @@ static void TaskOSStats(void* pvParameters) {
         printf("| %s Created\n", end_array[i].pcTaskName);
       }
     }
-#if 1
+  #if 1
     printf(
         "+------------------------------------------------------------------"
         "-+\n");
@@ -272,16 +285,44 @@ static void TaskOSStats(void* pvParameters) {
     printf(
         "+------------------------------------------------------------------"
         "-+\n\n");
-#endif
+  #endif
   exit: // Common return path
     free(start_array);
     free(end_array);
   } // while (1)
 } // TaskOSStats()
+#endif
+
+// Update the Graph with the current data
+static void TaskGraphUpdate(void* pvParameters) {
+  while (1) {
+    // Append current battery capacity
+    if ((bat_chart != NULL) && (bat_cap_data != NULL)) {
+      ESP_LOGI(TAG, "Updating Battery Graph");
+      xSemaphoreTake(eink_sem, portMAX_DELAY);
+      lv_chart_set_next_value(bat_chart, bat_cap_data, data_shunt.soc);
+      lv_chart_refresh(bat_chart);
+      xSemaphoreGive(eink_sem);
+    }
+
+    // Append current solar current
+    if ((solar_chart != NULL) && (solar_cur_data != NULL)) {
+      ESP_LOGI(TAG, "Updating Solar Graph");
+      xSemaphoreTake(eink_sem, portMAX_DELAY);
+      lv_chart_set_next_value(solar_chart, solar_cur_data, data_solar.current);
+      lv_chart_refresh(solar_chart);
+      xSemaphoreGive(eink_sem);
+    }
+
+    vTaskDelay(GRAPH_UPD_TIME / portTICK_PERIOD_MS);
+  }
+}
 
 // Task to update the EInk content
 static void TaskEInkUpdate(void* pvParameters) {
   char cBuffer[EINK_MAX_LINESIZE];
+
+  xSemaphoreTake(eink_sem, portMAX_DELAY);
 
   // Init LVGL
   lv_init();
@@ -300,28 +341,29 @@ static void TaskEInkUpdate(void* pvParameters) {
   lv_style_set_bg_color(&style_header, lv_color_black());
   lv_style_set_bg_opa(&style_header, 0xFF);
 
+  // Default Line style
+  static lv_style_t style_thinline;
+  lv_style_init(&style_thinline);
+  lv_style_set_line_width(&style_thinline, 1);
+  lv_style_set_line_color(&style_thinline, lv_color_black());
+
   // TODO: Refactoring, move all the labels into a struct and create/update in a loop
 
   // Draw outer frame
   static lv_point_precise_t frame_points[] = {
       {0, 0}, {EINK_SIZE_X - 1, 0}, {EINK_SIZE_X - 1, EINK_SIZE_Y - 1}, {0, EINK_SIZE_Y - 1}, {0, 0}};
 
-  static lv_style_t style_line;
-  lv_style_init(&style_line);
-  lv_style_set_line_width(&style_line, 1);
-
   lv_obj_t* frame_line;
   frame_line = lv_line_create(lv_screen_active());
   lv_line_set_points(frame_line, frame_points, sizeof(frame_points) / sizeof(lv_point_precise_t));
-  lv_obj_add_style(frame_line, &style_line, 0);
+  lv_obj_add_style(frame_line, &style_thinline, 0);
 
   // The Labels
-  lv_obj_t* Bat_Header = lv_label_create(lv_screen_active());
-  lv_obj_t* Bat_Cap    = lv_label_create(lv_screen_active());
-  lv_obj_t* Bat_Volt   = lv_label_create(lv_screen_active());
-  lv_obj_t* Bat_Cur    = lv_label_create(lv_screen_active());
-  lv_obj_t* Bat_Remain = lv_label_create(lv_screen_active());
-
+  lv_obj_t* Bat_Header   = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Cap      = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Volt     = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Cur      = lv_label_create(lv_screen_active());
+  lv_obj_t* Bat_Remain   = lv_label_create(lv_screen_active());
   lv_obj_t* Solar_Header = lv_label_create(lv_screen_active());
   lv_obj_t* Solar_Power  = lv_label_create(lv_screen_active());
   lv_obj_t* Solar_Cur    = lv_label_create(lv_screen_active());
@@ -357,32 +399,73 @@ static void TaskEInkUpdate(void* pvParameters) {
   lv_obj_set_style_text_align(Bat_Remain, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_pos(Bat_Remain, lv_pct(50), 2 * FONT_HEIGHT);
 
+  // Battery capacity graph
+  const uint8_t margin  = 4;
+  const uint16_t width  = EINK_SIZE_X - (2 * margin);
+  uint16_t y_pos        = 3 * FONT_HEIGHT + margin; // will be reused!
+  const uint16_t height = (EINK_SIZE_Y / 2) - y_pos - (2 * margin);
+
+  bat_chart = lv_chart_create(lv_screen_active());
+  lv_chart_set_range(bat_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1000);          // Y-Range: 0 .. 100.0%
+  lv_chart_set_update_mode(bat_chart, LV_CHART_UPDATE_MODE_SHIFT);          // Shifting Mode
+  lv_obj_set_size(bat_chart, width, height);                                // Width: 120px
+  lv_chart_set_point_count(bat_chart, 120);                                 // 120 data points
+  lv_chart_set_div_line_count(bat_chart, 5, 5);                             // 5 Divs
+  lv_obj_set_style_size(bat_chart, 0, 0, LV_PART_INDICATOR);                // Do not show Indicator
+  lv_obj_add_style(bat_chart, &style_thinline, 0);                          // Use thin Lines
+  lv_obj_set_style_bg_color(bat_chart, lv_color_white(), LV_PART_MAIN);     // Background: White
+  lv_obj_set_style_border_color(bat_chart, lv_color_black(), LV_PART_MAIN); // Foreground: Black
+  lv_obj_set_style_radius(bat_chart, 0, 0);                                 // No Radius on corners
+  lv_obj_set_pos(bat_chart, margin, y_pos);
+
+  bat_cap_data = lv_chart_add_series(bat_chart, lv_palette_main(LV_PALETTE_NONE), LV_CHART_AXIS_PRIMARY_Y);
+
   // Solar Data
   snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "Solar");
   lv_label_set_text(Solar_Header, cBuffer);
   lv_obj_set_width(Solar_Header, lv_pct(100));
   lv_obj_set_style_text_align(Solar_Header, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_pos(Solar_Header, 0, 3 * FONT_HEIGHT);
+  lv_obj_set_pos(Solar_Header, 0, (EINK_SIZE_Y / 2));
 
   lv_label_set_text(Solar_Power, "---");
   lv_obj_set_width(Solar_Power, lv_pct(50));
   lv_obj_set_style_text_align(Solar_Power, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_pos(Solar_Power, 0, 4 * FONT_HEIGHT);
+  lv_obj_set_pos(Solar_Power, 0, (EINK_SIZE_Y / 2) + (1 * FONT_HEIGHT));
 
   lv_label_set_text(Solar_Cur, "---");
   lv_obj_set_width(Solar_Cur, lv_pct(50));
   lv_obj_set_style_text_align(Solar_Cur, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_pos(Solar_Cur, lv_pct(50), 4 * FONT_HEIGHT);
+  lv_obj_set_pos(Solar_Cur, lv_pct(50), (EINK_SIZE_Y / 2) + (1 * FONT_HEIGHT));
 
   lv_label_set_text(Solar_State, "---");
   lv_obj_set_width(Solar_State, lv_pct(100));
   lv_obj_set_style_text_align(Solar_State, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_pos(Solar_State, 0, 5 * FONT_HEIGHT);
+  lv_obj_set_pos(Solar_State, 0, (EINK_SIZE_Y / 2) + (2 * FONT_HEIGHT));
+
+  // Solar current capacity graph
+  y_pos = (EINK_SIZE_Y / 2) + (3 * FONT_HEIGHT) + margin;
+
+  solar_chart = lv_chart_create(lv_screen_active());
+  lv_chart_set_range(solar_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);           // Y-Range: 0 .. 10.0 A
+  lv_chart_set_update_mode(solar_chart, LV_CHART_UPDATE_MODE_SHIFT);          // Shifting Mode
+  lv_obj_set_size(solar_chart, width, height);                                // Width: 120px
+  lv_chart_set_point_count(solar_chart, 120);                                 // 120 data points
+  lv_chart_set_div_line_count(solar_chart, 3, 5);                             // 5 Divs
+  lv_obj_set_style_size(solar_chart, 0, 0, LV_PART_INDICATOR);                // Do not show Indicator
+  lv_obj_add_style(solar_chart, &style_thinline, 0);                          // Use thin Lines
+  lv_obj_set_style_bg_color(solar_chart, lv_color_white(), LV_PART_MAIN);     // Background: White
+  lv_obj_set_style_border_color(solar_chart, lv_color_black(), LV_PART_MAIN); // Foreground: Black
+  lv_obj_set_style_radius(solar_chart, 0, 0);                                 // No Radius on corners
+  lv_obj_set_pos(solar_chart, margin, y_pos);
+
+  solar_cur_data = lv_chart_add_series(solar_chart, lv_palette_main(LV_PALETTE_NONE), LV_CHART_AXIS_PRIMARY_Y);
 
   lv_refr_now(display);
 
   while (1) {
+    xSemaphoreGive(eink_sem);
     vTaskDelay(EINK_UPD_TIME / portTICK_PERIOD_MS);
+    xSemaphoreTake(eink_sem, portMAX_DELAY);
 
     // Update Battery Data
     snprintf(&cBuffer[0], EINK_MAX_LINESIZE, "%d%%", (data_shunt.soc / 10));
@@ -455,7 +538,7 @@ void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const u
   data_dcdc.time  = xTaskGetTickCount();
 }
 
-// Callback to set solar charger  measurement data
+// Callback to set solar charger measurement data
 void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr, const uint16_t power, const bool error) {
   data_solar.state   = state;
   data_solar.voltage = volt;
@@ -536,17 +619,20 @@ void app_main(void) {
   }
 #endif
 
+#ifdef ENABLE_TASK_STATS
   // Start OS Statistics Task
   xTaskCreate(TaskOSStats, "FreeRTOS Stats", 4096, NULL, tskIDLE_PRIORITY, NULL);
+#endif
 
   // The LED Output
   gpio_reset_pin(PIN_LED);
   gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
 
   // Init EINK SPI driver
+  eink_sem = xSemaphoreCreateMutex();
   eink_init();
 
-  // Bluetooth
+  // Bluetooth and Callbacks
   blue_init();
   blue_setcb_sshunt(shunt_cb);
   blue_setcb_ssolar(solar_cb);
@@ -555,29 +641,28 @@ void app_main(void) {
   // Start Panel Update Task
   xTaskCreate(TaskEInkUpdate, "EInk Update", 4096, NULL, tskIDLE_PRIORITY, NULL);
 
+  // Start graph updater
+  xTaskCreate(TaskGraphUpdate, "Graph Update", 4096, NULL, tskIDLE_PRIORITY, NULL);
+
   while (1) {
+#if 1
+    // Create simulation data
+    shunt_cb(1234, -150, (esp_random() % 1000), 0xFF, 90, 0);
+    solar_cb(3, 1345, (esp_random() % 100), 34, 0);
+    dcdc_cb(0, 1234, 0, 0, 0);
+#endif
+
     // Print current Data
-    ESP_LOGI(TAG, "Shunt: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
     uint8_t hours = data_shunt.soc / 60;
     uint8_t mins  = data_shunt.soc - 60 * hours;
-    ESP_LOGI(TAG, "   U=%d", data_shunt.voltage);
-    ESP_LOGI(TAG, "   I=%ld", data_shunt.current);
-    ESP_LOGI(TAG, "   T=%d", data_shunt.temp);
-    ESP_LOGI(TAG, "   L=%d", data_shunt.soc);
-    ESP_LOGI(TAG, "   E=0x%02x", data_shunt.error);
-    ESP_LOGI(TAG, "   R=%02d:%0d", hours, mins);
-    ESP_LOGI(TAG, "DCDC: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
-    ESP_LOGI(TAG, "   I=%d", data_dcdc.v_in);
-    ESP_LOGI(TAG, "   O=%d", data_dcdc.v_out);
-    ESP_LOGI(TAG, " Off=0x%lx", data_dcdc.offr);
-    ESP_LOGI(TAG, "   E=0x%02x", data_dcdc.error);
-    ESP_LOGI(TAG, "   S=0x%02x", data_dcdc.state);
-    ESP_LOGI(TAG, "Solar: (%lu)", portTICK_PERIOD_MS * (xTaskGetTickCount() - data_solar.time));
-    ESP_LOGI(TAG, "   U=%d", data_solar.voltage);
-    ESP_LOGI(TAG, "   I=%d", data_solar.current);
-    ESP_LOGI(TAG, "   P=%d", data_solar.power);
-    ESP_LOGI(TAG, "   S=0x%02x", data_solar.state);
-    ESP_LOGI(TAG, "   E=0x%02x", data_solar.error);
+    ESP_LOGI(TAG, "Shunt: U=%d I=%ld T=%d L=%d E=0x%02x R=%02d:%0d (%lu)", data_shunt.voltage, data_shunt.current,
+             data_shunt.temp, data_shunt.soc, data_shunt.error, hours, mins,
+             portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
+    ESP_LOGI(TAG, "DCDC:  I=%d O=%d Off=0x%lx E=0x%02x S=0x%02x (%lu)", data_dcdc.v_in, data_dcdc.v_out, data_dcdc.offr,
+             data_dcdc.error, data_dcdc.state, portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
+    ESP_LOGI(TAG, "Solar: U=%d I=%d P=%d S=0x%02x E=0x%02x (%lu)", data_solar.voltage, data_solar.current,
+             data_solar.power, data_solar.state, data_solar.error,
+             portTICK_PERIOD_MS * (xTaskGetTickCount() - data_solar.time));
 
     vTaskDelay(LOOP_TIME / portTICK_PERIOD_MS);
   }
