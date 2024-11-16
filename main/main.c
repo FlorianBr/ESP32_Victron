@@ -519,6 +519,8 @@ void flush_cb(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
 // Callback to set smartshunts measurement data
 void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const uint16_t temp, const uint16_t remain,
               const bool error) {
+  ESP_LOGD(TAG, "Shunt Data Received");
+
   data_shunt.voltage = volt;
   data_shunt.current = curr;
   data_shunt.soc     = soc;
@@ -530,6 +532,8 @@ void shunt_cb(const uint16_t volt, const int32_t curr, const uint16_t soc, const
 
 // Callback to set DC/DC Converter Data
 void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const uint32_t off, const bool error) {
+  ESP_LOGD(TAG, "DC/DC Data Received");
+
   data_dcdc.state = state;
   data_dcdc.v_in  = in;
   data_dcdc.v_out = out;
@@ -540,6 +544,8 @@ void dcdc_cb(const uint8_t state, const uint16_t in, const uint16_t out, const u
 
 // Callback to set solar charger measurement data
 void solar_cb(const uint8_t state, const uint16_t volt, const uint16_t curr, const uint16_t power, const bool error) {
+  ESP_LOGD(TAG, "Solar Data Received");
+
   data_solar.state   = state;
   data_solar.voltage = volt;
   data_solar.current = curr;
@@ -645,7 +651,7 @@ void app_main(void) {
   xTaskCreate(TaskGraphUpdate, "Graph Update", 4096, NULL, tskIDLE_PRIORITY, NULL);
 
   while (1) {
-#if 1
+#if 0
     // Create simulation data
     shunt_cb(1234, -150, (esp_random() % 1000), 0xFF, 90, 0);
     solar_cb(3, 1345, (esp_random() % 100), 34, 0);
@@ -655,12 +661,14 @@ void app_main(void) {
     // Print current Data
     uint8_t hours = data_shunt.soc / 60;
     uint8_t mins  = data_shunt.soc - 60 * hours;
-    ESP_LOGI(TAG, "Shunt: U=%d I=%ld T=%d L=%d E=0x%02x R=%02d:%0d (%lu)", data_shunt.voltage, data_shunt.current,
+    ESP_LOGI(TAG, "+----");
+    ESP_LOGI(TAG, "| Shunt: U=%d I=%ld T=%d L=%d E=0x%02x R=%02d:%0d (%lu)", data_shunt.voltage, data_shunt.current,
              data_shunt.temp, data_shunt.soc, data_shunt.error, hours, mins,
              portTICK_PERIOD_MS * (xTaskGetTickCount() - data_shunt.time));
-    ESP_LOGI(TAG, "DCDC:  I=%d O=%d Off=0x%lx E=0x%02x S=0x%02x (%lu)", data_dcdc.v_in, data_dcdc.v_out, data_dcdc.offr,
-             data_dcdc.error, data_dcdc.state, portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
-    ESP_LOGI(TAG, "Solar: U=%d I=%d P=%d S=0x%02x E=0x%02x (%lu)", data_solar.voltage, data_solar.current,
+    ESP_LOGI(TAG, "| DCDC:  I=%d O=%d Off=0x%lx E=0x%02x S=0x%02x (%lu)", data_dcdc.v_in, data_dcdc.v_out,
+             data_dcdc.offr, data_dcdc.error, data_dcdc.state,
+             portTICK_PERIOD_MS * (xTaskGetTickCount() - data_dcdc.time));
+    ESP_LOGI(TAG, "| Solar: U=%d I=%d P=%d S=0x%02x E=0x%02x (%lu)", data_solar.voltage, data_solar.current,
              data_solar.power, data_solar.state, data_solar.error,
              portTICK_PERIOD_MS * (xTaskGetTickCount() - data_solar.time));
 
