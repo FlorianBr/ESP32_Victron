@@ -34,12 +34,12 @@ Libraries used:
 - [ ] Victron: Refactoring
 - [ ] LVGL: Change Theme to Monochrome
 - [ ] LVGL: Fix display orientation
-- [ ] Display current states
-- [ ] Display battery capacity, voltage and current
-- [ ] Display solar panel power
-- [ ] Display battery graph
-- [ ] Display solar graph
-- [ ] Data: Average data
+- [x] Display current states
+- [x] Display battery capacity, voltage and current
+- [x] Display solar panel power
+- [x] Display battery graph
+- [x] Display solar graph
+- [x] Data: Average data
 - [ ] Sending Data via LoRa
 
 ### Maybe
