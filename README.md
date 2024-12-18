@@ -40,12 +40,12 @@ Libraries used:
 - [ ] Display battery graph
 - [ ] Display solar graph
 - [ ] Data: Average data
+- [ ] Sending Data via LoRa
 
 ### Maybe
 
 - [ ] WiFi
 - [ ] Sending Data to a MQTT broker
-- [ ] Sending Data via LoRa to my LoRa-Central
 - [ ] Store keys in NVS
 - [ ] Add and Remove keys with MQTT commands
 
